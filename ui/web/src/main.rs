@@ -1,3 +1,7 @@
+use recondo_domain::cmd;
+// use recondo_domain::model;
+
 fn main() {
-    println!("Hello, world!");
+    let media = cmd::create_media_from_file();
+    println!("Created media: {:?}", media);
 }
