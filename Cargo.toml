@@ -1,0 +1,13 @@
+[workspace]
+members = ["domain", "dal", "ui/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+authors = ["Grady Denton"]
+edition = "2024"
+description = "Graph-based media discovery through flexible, tag-driven search and exploration, written in Rust. Drill down and pivot without rigid hierarchies."
+repository = "https://github.com/McFlip/recondo"
+license = "Apache-2.0"
+keywords = ["media", "search", "discovery", "graph", "tags"]
+categories = ["multimedia", "database-implementations"]
