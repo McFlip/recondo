@@ -30,13 +30,31 @@ Users can then drill down by adding more conditions or pivot by changing the tag
 
 The key benefit is that each search becomes a flexible intersection of relationships, rather than a path through a predefined folder structure.
 
+## Why Choose Recondo?
+
+Traditional media managers organize content around folders, albums, or predefined taxonomies. These approaches work well when you already know where something belongs, but can make discovery difficult when you're exploring a large collection or don't know exactly what you're looking for.
+
+Recondo takes a different approach. Rather than forcing media into a hierarchy, it connects media items to tags in a graph. You can combine tags across categories, narrow results with additional conditions, or pivot to a different dimension of your collection at any time.
+
+This makes Recondo particularly useful when:
+
+- You remember attributes, not locations. Find media by what it depicts, where it was taken, its style, or other descriptive tags.
+
+- You want to discover, not just retrieve. Explore connections and uncover relevant items you might not have thought to search for.
+
+- Your categories overlap. Combine independent dimensions without duplicating items across folders or maintaining a rigid taxonomy.
+
+- Your collection doesn't fit a tree. Navigate relationships freely instead of committing to a single organizational structure.
+
+Recondo is built around a simple idea: finding media should be an exploration, not a scavenger hunt through folders.
+
 ## Status
 
 Recondo is under development. Features, interfaces, and usage instructions will evolve as the project takes shape.
 
-## Why Recondo?
+## The Name
 
-*Recondo* combines **reconnaissance** and **commando**. The name became associated with the U.S. Army's long-range reconnaissance patrols during the Vietnam War, whose small teams ventured deep into enemy territory to observe, gather intelligence, and locate an elusive enemy. The MACV Recondo School was established in Vietnam in 1966 to train personnel for these demanding missions. <https://history.army.mil/portals/143/Images/Publications/catalog/90-21-1.pdf>
+*Recondo* is a portmanteau of **reconnaissance** and **commando**. The name became associated with the U.S. Army's long-range reconnaissance patrols during the Vietnam War, whose small teams ventured deep into enemy territory to observe, gather intelligence, and locate an elusive enemy. The MACV Recondo School was established in Vietnam in 1966 to train personnel for these demanding missions. <https://history.army.mil/portals/143/Images/Publications/catalog/90-21-1.pdf>
 
 Recondo borrows that spirit of exploration: venture into a vast, unfamiliar collection, follow the leads, uncover connections, and find what you're looking for—even when you don't know exactly where to start.
 
