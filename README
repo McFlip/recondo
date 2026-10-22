@@ -1,0 +1,45 @@
+# Recondo
+
+**Discover more in your media collection.**
+
+Recondo is a graph-based media discovery tool written in Rust. It connects media to descriptive tags, letting you explore collections through flexible searches rather than rigid folder structures or hierarchies.
+
+Combine tags to narrow your search, follow connections to discover related media, and pivot between categories to explore your collection from different angles.
+
+## Features
+
+- **Tag-driven discovery** — Find media through descriptive tags and shared categories.
+- **Flexible search** — Combine multiple tags using logical conditions to refine results.
+- **Drill down and pivot** — Narrow your focus or explore a different dimension without losing the flexibility of a graph.
+- **Relationship-based organization** — Connect media to multiple tags without imposing a fixed hierarchy.
+- **Built with Rust** — Designed with performance and reliability in mind.
+
+## Philosophy
+
+Media collections shouldn't be limited by folders and rigid taxonomies. Recondo treats discovery as exploration: every tag offers another way to navigate your collection, uncover connections, and find things you might not have thought to search for.
+
+In Recondo, tags can be combined using logical conditions to progressively narrow or broaden a search. Because tags are connected to media through a graph, searches can cross categories without following a fixed hierarchy.
+
+For example, imagine searching a collection of images:
+
+- AND — Find media tagged with both `landscape` and `sunset`.
+- OR — Find media tagged with either `mountains` or `coast`.
+- NOT — Exclude media tagged with `black-and-white`.
+
+Users can then drill down by adding more conditions or pivot by changing the tags they're exploring. Since tags can belong to different categories, a search might combine a subject, a location, a style, and a date without requiring those categories to fit into a tree.
+
+The key benefit is that each search becomes a flexible intersection of relationships, rather than a path through a predefined folder structure.
+
+## Status
+
+Recondo is under development. Features, interfaces, and usage instructions will evolve as the project takes shape.
+
+## Why Recondo?
+
+*Recondo* combines **reconnaissance** and **commando**. The name became associated with the U.S. Army's long-range reconnaissance patrols during the Vietnam War, whose small teams ventured deep into enemy territory to observe, gather intelligence, and locate an elusive enemy. The MACV Recondo School was established in Vietnam in 1966 to train personnel for these demanding missions. <https://history.army.mil/portals/143/Images/Publications/catalog/90-21-1.pdf>
+
+Recondo borrows that spirit of exploration: venture into a vast, unfamiliar collection, follow the leads, uncover connections, and find what you're looking for—even when you don't know exactly where to start.
+
+## License
+
+Recondo is licensed under the Apache License, Version 2.0.
