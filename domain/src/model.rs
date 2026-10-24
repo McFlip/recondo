@@ -114,6 +114,47 @@ impl Tag {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edge {
+    label: String,
+    media: String,
+    tag: String,
+}
+
+impl Edge {
+    pub fn new(label: String, media: String, tag: String) -> Result<Self, EdgeError> {
+        if label.is_empty() {
+            return Err(EdgeError::EmptyLabel);
+        }
+        if media.is_empty() {
+            return Err(EdgeError::EmptyMedia);
+        }
+        if tag.is_empty() {
+            return Err(EdgeError::EmptyTag);
+        }
+        Ok(Self { label, media, tag })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeError {
+    EmptyLabel,
+    EmptyMedia,
+    EmptyTag,
+}
+
+impl fmt::Display for EdgeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyLabel => write!(f, "label must not be empty"),
+            Self::EmptyMedia => write!(f, "media ID must not be empty"),
+            Self::EmptyTag => write!(f, "tag ID must not be empty"),
+        }
+    }
+}
+
+impl Error for EdgeError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +188,50 @@ mod tests {
     fn test_tag_new_rejects_empty_name() {
         assert_eq!(Tag::new(""), Err(TagError::EmptyName));
         assert_eq!(Tag::new("   \t\n"), Err(TagError::EmptyName));
+    }
+
+    #[test]
+    fn test_edge_new_success() {
+        let edge = Edge::new(
+            "liked".to_string(),
+            "media_id_1".to_string(),
+            "tag_id_1".to_string(),
+        )
+        .unwrap();
+        assert_eq!(edge.label, "liked");
+        assert_eq!(edge.media, "media_id_1");
+        assert_eq!(edge.tag, "tag_id_1");
+    }
+
+    #[test]
+    fn test_edge_new_empty_label() {
+        assert_eq!(
+            Edge::new(
+                "".to_string(),
+                "media_id_1".to_string(),
+                "tag_id_1".to_string()
+            ),
+            Err(EdgeError::EmptyLabel)
+        );
+    }
+
+    #[test]
+    fn test_edge_new_empty_media() {
+        assert_eq!(
+            Edge::new("liked".to_string(), "".to_string(), "tag_id_1".to_string()),
+            Err(EdgeError::EmptyMedia)
+        );
+    }
+
+    #[test]
+    fn test_edge_new_empty_tag() {
+        assert_eq!(
+            Edge::new(
+                "liked".to_string(),
+                "media_id_1".to_string(),
+                "".to_string()
+            ),
+            Err(EdgeError::EmptyTag)
+        );
     }
 }
