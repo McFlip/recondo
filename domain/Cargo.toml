@@ -10,3 +10,6 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+blake3 = "1"
+hex = "0.4"
+unicode-normalization = "0.1"
