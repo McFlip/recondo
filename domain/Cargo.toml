@@ -13,3 +13,4 @@ categories.workspace = true
 blake3 = "1"
 hex = "0.4"
 unicode-normalization = "0.1"
+url = "2"

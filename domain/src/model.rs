@@ -1,12 +1,47 @@
 use std::error::Error;
 use std::fmt;
+use std::str::FromStr;
 
 use unicode_normalization::UnicodeNormalization;
+use url::Url;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaId(String);
+
+impl MediaId {
+    pub fn from_hash(s: impl Into<String>) -> Result<Self, MediaIdError> {
+        let s = s.into();
+        if s.is_empty() {
+            return Err(MediaIdError::Empty);
+        }
+        // Assume it's a blake3 hash hex string as per requirements
+        Ok(Self(s))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaIdError {
+    Empty,
+}
+
+impl fmt::Display for MediaIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "media id must not be empty"),
+        }
+    }
+}
+
+impl Error for MediaIdError {}
 
 #[derive(Debug, Clone)]
 pub struct Media {
-    pub id: String,
-    pub url: String,
+    pub id: MediaId,
+    pub url: Url,
     pub title: Option<String>,
     pub mime_type: Option<String>,
     pub file_size: Option<u64>,
@@ -22,7 +57,7 @@ pub struct MediaOpts {
 }
 
 impl Media {
-    pub fn new(id: String, url: String, opts: Option<MediaOpts>) -> Self {
+    pub fn new(id: MediaId, url: Url, opts: Option<MediaOpts>) -> Self {
         let opts = opts.as_ref();
         Self {
             id,
