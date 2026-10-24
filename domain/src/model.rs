@@ -1,6 +1,5 @@
 use std::error::Error;
 use std::fmt;
-use std::str::FromStr;
 
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
