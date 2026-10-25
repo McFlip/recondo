@@ -255,7 +255,9 @@ dependencies = [
 name = "recondo-web"
 version = "0.1.0"
 dependencies = [
+ "recondo-dal",
  "recondo-domain",
+ "redb",
 ]
 
 [[package]]

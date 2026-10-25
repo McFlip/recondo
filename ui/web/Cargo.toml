@@ -11,3 +11,5 @@ categories.workspace = true
 
 [dependencies]
 recondo-domain = { path = "../../domain" }
+recondo-dal = { path = "../../dal" }
+redb = "4.4.0"
