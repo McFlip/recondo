@@ -11,3 +11,4 @@ categories.workspace = true
 
 [dependencies]
 redb = "4.4.0"
+recondo-domain = { path = "../domain" }
