@@ -10,3 +10,4 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+redb = "4.4.0"
