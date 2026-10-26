@@ -112,6 +112,14 @@ impl Tag {
     pub fn name(&self) -> &str {
         &self.name
     }
+
+    /// Checks whether this tag already exists in the repository's tag adjacency list.
+    pub fn check<R: crate::repository::TagRepository>(
+        &self,
+        repo: &R,
+    ) -> Result<bool, R::Error> {
+        repo.tag_exists(self.id())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

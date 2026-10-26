@@ -12,6 +12,18 @@ pub trait MediaRepository {
     ) -> Result<(), SaveMediaError<Self::Error>>;
 }
 
+pub trait TagRepository {
+    type Error;
+    fn init(&self) -> Result<(), Self::Error>;
+    fn tag_exists(&self, id: &str) -> Result<bool, Self::Error>;
+    fn add_tag_edge(
+        &self,
+        media_id: &str,
+        tag_id: &str,
+        label: &str,
+    ) -> Result<(), Self::Error>;
+}
+
 #[derive(Debug)]
 pub enum SaveMediaError<E> {
     Io(std::io::Error),

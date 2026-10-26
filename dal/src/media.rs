@@ -1,5 +1,5 @@
 use recondo_domain::model::{MediaId, Tag};
-use recondo_domain::repository::{MediaRepository, SaveMediaError};
+use recondo_domain::repository::{MediaRepository, SaveMediaError, TagRepository};
 use redb::{Database, Error, ReadableDatabase, ReadableTable, TableDefinition};
 use std::fs;
 use std::path::Path;
@@ -12,6 +12,36 @@ type EdgeFrmTag = (String, String);
 const MEDIA_ADJ_LST: TableDefinition<&str, Vec<EdgeFrmMedia>> =
     TableDefinition::new("MEDIA_ADJ_LST");
 const TAG_ADJ_LST: TableDefinition<&str, Vec<EdgeFrmTag>> = TableDefinition::new("TAG_ADJ_LST");
+
+#[derive(Debug)]
+pub enum AddTagEdgeError {
+    MediaNotFound,
+    Repository(Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl AddTagEdgeError {
+    fn repository<E: std::error::Error + Send + Sync + 'static>(error: E) -> Self {
+        Self::Repository(Box::new(error))
+    }
+}
+
+impl std::fmt::Display for AddTagEdgeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MediaNotFound => write!(f, "media not found"),
+            Self::Repository(e) => write!(f, "repository error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for AddTagEdgeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::MediaNotFound => None,
+            Self::Repository(e) => Some(e.as_ref()),
+        }
+    }
+}
 
 pub fn init_db(db: &Database) -> Result<(), Error> {
     let write_txn = db.begin_write()?;
@@ -119,6 +149,66 @@ impl MediaRepository for RedbMediaRepository {
             let _ = fs::remove_file(dest_path);
             return Err(SaveMediaError::Repository(e.into()));
         }
+        Ok(())
+    }
+}
+
+impl TagRepository for RedbMediaRepository {
+    type Error = AddTagEdgeError;
+
+    fn init(&self) -> Result<(), Self::Error> {
+        init_db(&self.db).map_err(AddTagEdgeError::repository)
+    }
+
+    fn tag_exists(&self, id: &str) -> Result<bool, Self::Error> {
+        let read_txn = self.db.begin_read().map_err(AddTagEdgeError::repository)?;
+        let table = read_txn
+            .open_table(TAG_ADJ_LST)
+            .map_err(AddTagEdgeError::repository)?;
+        Ok(table
+            .get(id)
+            .map_err(AddTagEdgeError::repository)?
+            .is_some())
+    }
+
+    fn add_tag_edge(&self, media_id: &str, tag_id: &str, label: &str) -> Result<(), Self::Error> {
+        let write_txn = self.db.begin_write().map_err(AddTagEdgeError::repository)?;
+        {
+            let media_edge = (label.to_string(), tag_id.to_string());
+            let mut media_table = write_txn
+                .open_table(MEDIA_ADJ_LST)
+                .map_err(AddTagEdgeError::repository)?;
+            let existing_media = media_table
+                .get(media_id)
+                .map_err(AddTagEdgeError::repository)?
+                .ok_or(AddTagEdgeError::MediaNotFound)?
+                .value();
+            if !existing_media.contains(&media_edge) {
+                let mut edges = existing_media;
+                edges.push(media_edge);
+                media_table
+                    .insert(media_id, edges)
+                    .map_err(AddTagEdgeError::repository)?;
+            }
+
+            let tag_edge = (label.to_string(), media_id.to_string());
+            let mut tag_table = write_txn
+                .open_table(TAG_ADJ_LST)
+                .map_err(AddTagEdgeError::repository)?;
+            let existing_tag = tag_table
+                .get(tag_id)
+                .map_err(AddTagEdgeError::repository)?
+                .map(|value| value.value())
+                .unwrap_or_default();
+            if !existing_tag.contains(&tag_edge) {
+                let mut edges = existing_tag;
+                edges.push(tag_edge);
+                tag_table
+                    .insert(tag_id, edges)
+                    .map_err(AddTagEdgeError::repository)?;
+            }
+        }
+        write_txn.commit().map_err(AddTagEdgeError::repository)?;
         Ok(())
     }
 }
@@ -270,6 +360,26 @@ mod tests {
         repo.save_media(&src, &dest).unwrap();
         assert!(dest.exists());
         assert_eq!(fs::read(&dest).unwrap(), b"data");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_add_tag_edge_rejects_missing_media() {
+        let base = temp_base("missing_media_tag");
+        let db_path = base.join("test.redb");
+        let db = Database::create(&db_path).unwrap();
+        init_db(&db).unwrap();
+        let repo = RedbMediaRepository::new(db);
+
+        assert!(matches!(
+            repo.add_tag_edge("missing", "tag-id", "liked"),
+            Err(AddTagEdgeError::MediaNotFound)
+        ));
+        assert!(!repo
+            .media_exists(&MediaId::from_hash("missing").unwrap())
+            .unwrap());
+        assert!(!repo.tag_exists("tag-id").unwrap());
 
         let _ = fs::remove_dir_all(&base);
     }

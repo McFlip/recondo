@@ -18,11 +18,17 @@ fn main() -> Result<(), Box<dyn StdError>> {
     let db = Database::create(&db_path)?;
     let repo = RedbMediaRepository::new(db);
 
-    repo.init()?;
+    MediaRepository::init(&repo)?;
 
     let upload_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
     match cmd::create_media_from_file(upload_path, &repo)? {
-        Some(media) => println!("Created media: {:?}", media),
+        Some(media) => {
+            println!("Created media: {:?}", media);
+            match cmd::add_tag_to_media(media.id.as_str(), "needs tags", "to do", &repo) {
+                Ok(tag) => println!("Added tag: {:?}", tag),
+                Err(e) => println!("Add tag error: {}", e),
+            }
+        }
         None => println!("Media already exists"),
     }
 

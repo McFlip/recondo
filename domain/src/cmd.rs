@@ -1,6 +1,6 @@
 use crate::{
     model,
-    repository::{MediaRepository, SaveMediaError},
+    repository::{MediaRepository, SaveMediaError, TagRepository},
 };
 use std::{error::Error as StdError, fmt, fs, io::Read, path::PathBuf};
 use url;
@@ -75,10 +75,58 @@ pub fn create_media_from_file<R: MediaRepository>(
     Ok(Some(model::Media::new(id, url, None)))
 }
 
+#[derive(Debug)]
+pub enum AddTagError<E> {
+    EmptyMediaId,
+    EmptyLabel,
+    Tag(model::TagError),
+    Repository(E),
+}
+
+impl<E: fmt::Display> fmt::Display for AddTagError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyMediaId => write!(f, "media id must not be empty"),
+            Self::EmptyLabel => write!(f, "label must not be empty"),
+            Self::Tag(e) => write!(f, "tag error: {}", e),
+            Self::Repository(e) => write!(f, "repository error: {}", e),
+        }
+    }
+}
+
+impl<E: StdError + 'static> StdError for AddTagError<E> {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::EmptyMediaId => None,
+            Self::EmptyLabel => None,
+            Self::Tag(e) => Some(e),
+            Self::Repository(e) => Some(e),
+        }
+    }
+}
+
+pub fn add_tag_to_media<R: TagRepository>(
+    media_id: &str,
+    tag_name: &str,
+    label: &str,
+    repo: &R,
+) -> Result<model::Tag, AddTagError<R::Error>> {
+    if media_id.is_empty() {
+        return Err(AddTagError::EmptyMediaId);
+    }
+    if label.is_empty() {
+        return Err(AddTagError::EmptyLabel);
+    }
+    let tag = model::Tag::new(tag_name).map_err(AddTagError::Tag)?;
+    repo.add_tag_edge(media_id, tag.id(), label)
+        .map_err(AddTagError::Repository)?;
+    Ok(tag)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repository::{MediaRepository, SaveMediaError};
+    use crate::repository::{MediaRepository, SaveMediaError, TagRepository};
     use std::collections::HashSet;
 
     #[derive(Debug)]
@@ -137,6 +185,35 @@ mod tests {
         ) -> Result<(), SaveMediaError<Self::Error>> {
             if self.error.is_some() {
                 Err(SaveMediaError::Repository(StubError))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    impl TagRepository for StubRepo {
+        type Error = StubError;
+
+        fn init(&self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn tag_exists(&self, _id: &str) -> Result<bool, Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
+            } else {
+                Ok(false)
+            }
+        }
+
+        fn add_tag_edge(
+            &self,
+            _media_id: &str,
+            _tag_id: &str,
+            _label: &str,
+        ) -> Result<(), Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
             } else {
                 Ok(())
             }
@@ -212,5 +289,40 @@ mod tests {
         assert!(matches!(result, Err(CreateMediaError::Repository(_))));
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_add_tag_to_media_success() {
+        let repo = StubRepo::new(&[]);
+        let tag = add_tag_to_media("media1", "landscape", "liked", &repo).unwrap();
+        assert_eq!(tag.name(), "landscape");
+    }
+
+    #[test]
+    fn test_add_tag_to_media_empty_media_id() {
+        let repo = StubRepo::new(&[]);
+        let result = add_tag_to_media("", "landscape", "liked", &repo);
+        assert!(matches!(result, Err(AddTagError::EmptyMediaId)));
+    }
+
+    #[test]
+    fn test_add_tag_to_media_empty_label() {
+        let repo = StubRepo::new(&[]);
+        let result = add_tag_to_media("media1", "landscape", "", &repo);
+        assert!(matches!(result, Err(AddTagError::EmptyLabel)));
+    }
+
+    #[test]
+    fn test_add_tag_to_media_empty_tag_name() {
+        let repo = StubRepo::new(&[]);
+        let result = add_tag_to_media("media1", "   ", "liked", &repo);
+        assert!(matches!(result, Err(AddTagError::Tag(_))));
+    }
+
+    #[test]
+    fn test_add_tag_to_media_repository_error() {
+        let repo = StubRepo::failing();
+        let result = add_tag_to_media("media1", "landscape", "liked", &repo);
+        assert!(matches!(result, Err(AddTagError::Repository(_))));
     }
 }
