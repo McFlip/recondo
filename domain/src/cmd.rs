@@ -11,6 +11,7 @@ pub enum CreateMediaError<E> {
     MediaId(model::MediaIdError),
     Url(url::ParseError),
     Repository(E),
+    Tag(Box<dyn StdError + Send + Sync + 'static>),
 }
 
 impl<E: fmt::Display> fmt::Display for CreateMediaError<E> {
@@ -20,6 +21,7 @@ impl<E: fmt::Display> fmt::Display for CreateMediaError<E> {
             Self::MediaId(e) => write!(f, "media id error: {}", e),
             Self::Url(e) => write!(f, "url parse error: {}", e),
             Self::Repository(e) => write!(f, "repository error: {}", e),
+            Self::Tag(e) => write!(f, "tag error: {}", e),
         }
     }
 }
@@ -31,6 +33,7 @@ impl<E: StdError + 'static> StdError for CreateMediaError<E> {
             Self::MediaId(e) => Some(e),
             Self::Url(e) => Some(e),
             Self::Repository(e) => Some(e),
+            Self::Tag(e) => Some(e.as_ref()),
         }
     }
 }
@@ -65,6 +68,7 @@ pub fn create_media_from_file<R: MediaRepository>(
         .map_err(|e| match e {
             SaveMediaError::Io(io) => CreateMediaError::Io(io),
             SaveMediaError::Repository(r) => CreateMediaError::Repository(r),
+            SaveMediaError::Tag(t) => CreateMediaError::Tag(t),
         })?;
     let url = url::Url::parse(&format!("file:///{}", dest_path.display()))
         .map_err(CreateMediaError::Url)?;
@@ -210,4 +214,3 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 }
-

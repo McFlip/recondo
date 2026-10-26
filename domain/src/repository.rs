@@ -16,6 +16,7 @@ pub trait MediaRepository {
 pub enum SaveMediaError<E> {
     Io(std::io::Error),
     Repository(E),
+    Tag(Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for SaveMediaError<E> {
@@ -23,6 +24,7 @@ impl<E: std::fmt::Display> std::fmt::Display for SaveMediaError<E> {
         match self {
             Self::Io(e) => write!(f, "io error: {}", e),
             Self::Repository(e) => write!(f, "repository error: {}", e),
+            Self::Tag(e) => write!(f, "tag error: {}", e),
         }
     }
 }
@@ -32,6 +34,8 @@ impl<E: std::error::Error + 'static> std::error::Error for SaveMediaError<E> {
         match self {
             Self::Io(e) => Some(e),
             Self::Repository(e) => Some(e),
+            Self::Tag(e) => Some(e.as_ref()),
         }
     }
 }
+
