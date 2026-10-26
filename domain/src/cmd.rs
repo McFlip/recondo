@@ -1,4 +1,7 @@
-use crate::{model, repository::MediaRepository};
+use crate::{
+    model,
+    repository::{MediaRepository, SaveMediaError},
+};
 use std::{error::Error as StdError, fmt, fs, io::Read, path::PathBuf};
 use url;
 
@@ -48,14 +51,22 @@ pub fn create_media_from_file<R: MediaRepository>(
     }
     let hash = hasher.finalize().to_hex().to_string();
     let id = model::MediaId::from_hash(hash).map_err(CreateMediaError::MediaId)?;
-    if repo.media_exists(&id).map_err(CreateMediaError::Repository)? {
+    if repo
+        .media_exists(&id)
+        .map_err(CreateMediaError::Repository)?
+    {
         return Ok(None);
     }
     let file_ext = src_path.extension().unwrap_or(std::ffi::OsStr::new(""));
-    let url = PathBuf::from("assets/")
+    let dest_path = PathBuf::from("assets/")
         .join(id.as_str())
         .with_extension(file_ext);
-    let url = url::Url::parse(&format!("file:///{}", url.display()))
+    repo.save_media(&src_path, &dest_path)
+        .map_err(|e| match e {
+            SaveMediaError::Io(io) => CreateMediaError::Io(io),
+            SaveMediaError::Repository(r) => CreateMediaError::Repository(r),
+        })?;
+    let url = url::Url::parse(&format!("file:///{}", dest_path.display()))
         .map_err(CreateMediaError::Url)?;
     Ok(Some(model::Media::new(id, url, None)))
 }
@@ -63,7 +74,7 @@ pub fn create_media_from_file<R: MediaRepository>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::repository::MediaRepository;
+    use crate::repository::{MediaRepository, SaveMediaError};
     use std::collections::HashSet;
 
     #[derive(Debug)]
@@ -112,6 +123,18 @@ mod tests {
                 Err(StubError)
             } else {
                 Ok(self.existing.contains(id.as_str()))
+            }
+        }
+
+        fn save_media(
+            &self,
+            _src_path: &std::path::Path,
+            _dest_path: &std::path::Path,
+        ) -> Result<(), SaveMediaError<Self::Error>> {
+            if self.error.is_some() {
+                Err(SaveMediaError::Repository(StubError))
+            } else {
+                Ok(())
             }
         }
     }
@@ -164,10 +187,8 @@ mod tests {
 
     #[test]
     fn test_create_media_from_file_missing_file() {
-        let path = std::env::temp_dir().join(format!(
-            "recondo_cmd_test_missing_{}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("recondo_cmd_test_missing_{}", std::process::id()));
         let _ = fs::remove_file(&path); // ensure the file does not exist
         let repo = StubRepo::new(&[]);
 
@@ -189,3 +210,4 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 }
+
