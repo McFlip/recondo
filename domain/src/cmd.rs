@@ -1,5 +1,5 @@
 use crate::{model, repository::MediaRepository};
-use std::{error::Error as StdError, fmt, fs, path::PathBuf};
+use std::{error::Error as StdError, fmt, fs, io::Read, path::PathBuf};
 use url;
 
 #[derive(Debug)]
@@ -36,8 +36,17 @@ pub fn create_media_from_file<R: MediaRepository>(
     src_path: PathBuf,
     repo: &R,
 ) -> Result<Option<model::Media>, CreateMediaError<R::Error>> {
-    let bytes = fs::read(&src_path).map_err(CreateMediaError::Io)?;
-    let hash = hex::encode(blake3::hash(&bytes).as_bytes());
+    let mut file = fs::File::open(&src_path).map_err(CreateMediaError::Io)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = [0u8; 65536];
+    loop {
+        let n = file.read(&mut buf).map_err(CreateMediaError::Io)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let hash = hasher.finalize().to_hex().to_string();
     let id = model::MediaId::from_hash(hash).map_err(CreateMediaError::MediaId)?;
     if repo.media_exists(&id).map_err(CreateMediaError::Repository)? {
         return Ok(None);
