@@ -86,6 +86,27 @@ pub fn get_media_by_id(db: &Database, id: &MediaId) -> Result<Option<Media>, Err
     Ok(Some(media))
 }
 
+pub fn get_media_adj_list(
+    db: &Database,
+    id: &MediaId,
+) -> Result<Option<Vec<EdgeFrmMedia>>, Error> {
+    let read_txn = db.begin_read()?;
+    let table = read_txn.open_table(MEDIA_ADJ_LST)?;
+    let Some(value) = table.get(id.as_str())? else {
+        return Ok(None);
+    };
+    Ok(Some(value.value()))
+}
+
+pub fn get_tag_adj_list(db: &Database, tag_id: &str) -> Result<Option<Vec<EdgeFrmTag>>, Error> {
+    let read_txn = db.begin_read()?;
+    let table = read_txn.open_table(TAG_ADJ_LST)?;
+    let Some(value) = table.get(tag_id)? else {
+        return Ok(None);
+    };
+    Ok(Some(value.value()))
+}
+
 pub struct RedbMediaRepository {
     db: Database,
 }
@@ -191,6 +212,13 @@ impl MediaRepository for RedbMediaRepository {
     fn get_media(&self, id: &MediaId) -> Result<Option<Media>, Self::Error> {
         get_media_by_id(&self.db, id)
     }
+
+    fn get_media_adj_list(
+        &self,
+        id: &MediaId,
+    ) -> Result<Option<Vec<(String, String)>>, Self::Error> {
+        get_media_adj_list(&self.db, id)
+    }
 }
 
 impl TagRepository for RedbMediaRepository {
@@ -250,6 +278,13 @@ impl TagRepository for RedbMediaRepository {
         }
         write_txn.commit().map_err(AddTagEdgeError::repository)?;
         Ok(())
+    }
+
+    fn get_tag_adj_list(
+        &self,
+        tag_id: &str,
+    ) -> Result<Option<Vec<(String, String)>>, Self::Error> {
+        get_tag_adj_list(&self.db, tag_id).map_err(AddTagEdgeError::repository)
     }
 }
 
@@ -484,6 +519,45 @@ mod tests {
                 .unwrap()
         );
         assert!(!repo.tag_exists("tag-id").unwrap());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_get_adj_lists() {
+        let base = temp_base("get_adj_lists");
+        let src = base.join("src.txt");
+        let dest = base.join("assets").join("hash123.txt");
+        fs::write(&src, b"test").unwrap();
+
+        let db_path = base.join("test.redb");
+        let db = Database::create(&db_path).unwrap();
+        init_db(&db).unwrap();
+        let repo = RedbMediaRepository::new(db);
+
+        let media = make_test_media("hash123");
+        repo.save_media(&media, &src, &dest).unwrap();
+
+        let tag_id = Tag::new("needs tags").unwrap().id().to_string();
+
+        // Check Media adj list
+        let media_adj = repo.get_media_adj_list(&media.id).unwrap();
+        assert_eq!(
+            media_adj,
+            Some(vec![("to do".to_string(), tag_id.clone())])
+        );
+
+        // Check Tag adj list
+        let tag_adj = repo.get_tag_adj_list(&tag_id).unwrap();
+        assert_eq!(
+            tag_adj,
+            Some(vec![("to do".to_string(), "hash123".to_string())])
+        );
+
+        // Not found cases
+        let missing_media = MediaId::from_hash("not_here").unwrap();
+        assert_eq!(repo.get_media_adj_list(&missing_media).unwrap(), None);
+        assert_eq!(repo.get_tag_adj_list("not_here").unwrap(), None);
 
         let _ = fs::remove_dir_all(&base);
     }

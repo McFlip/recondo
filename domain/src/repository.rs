@@ -13,6 +13,10 @@ pub trait MediaRepository {
     ) -> Result<(), SaveMediaError<Self::Error>>;
     fn save_media_record(&self, media: &Media) -> Result<(), Self::Error>;
     fn get_media(&self, id: &MediaId) -> Result<Option<Media>, Self::Error>;
+    fn get_media_adj_list(
+        &self,
+        id: &MediaId,
+    ) -> Result<Option<Vec<(String, String)>>, Self::Error>;
 }
 
 pub trait TagRepository {
@@ -25,6 +29,10 @@ pub trait TagRepository {
         tag_id: &str,
         label: &str,
     ) -> Result<(), Self::Error>;
+    fn get_tag_adj_list(
+        &self,
+        tag_id: &str,
+    ) -> Result<Option<Vec<(String, String)>>, Self::Error>;
 }
 
 #[derive(Debug)]

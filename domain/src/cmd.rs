@@ -207,6 +207,17 @@ mod tests {
                 Ok(None)
             }
         }
+
+        fn get_media_adj_list(
+            &self,
+            _id: &model::MediaId,
+        ) -> Result<Option<Vec<(String, String)>>, Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
+            } else {
+                Ok(None)
+            }
+        }
     }
 
     impl TagRepository for StubRepo {
@@ -234,6 +245,17 @@ mod tests {
                 Err(StubError)
             } else {
                 Ok(())
+            }
+        }
+
+        fn get_tag_adj_list(
+            &self,
+            _tag_id: &str,
+        ) -> Result<Option<Vec<(String, String)>>, Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
+            } else {
+                Ok(None)
             }
         }
     }
