@@ -363,7 +363,7 @@ impl TagRepository for RedbMediaRepository {
             }
 
             upsert_relationship_tag_txn(&write_txn, &label, tag_id)
-                .map_err(|e| AddTagEdgeError::repository(e))?;
+                .map_err(AddTagEdgeError::repository)?;
         }
         write_txn.commit().map_err(AddTagEdgeError::repository)?;
         Ok(())
