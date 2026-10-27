@@ -64,15 +64,16 @@ pub fn create_media_from_file<R: MediaRepository>(
     let dest_path = PathBuf::from("assets/")
         .join(id.as_str())
         .with_extension(file_ext);
-    repo.save_media(&src_path, &dest_path)
+    let url = url::Url::parse(&format!("file:///{}", dest_path.display()))
+        .map_err(CreateMediaError::Url)?;
+    let media = model::Media::new(id, url, None);
+    repo.save_media(&media, &src_path, &dest_path)
         .map_err(|e| match e {
             SaveMediaError::Io(io) => CreateMediaError::Io(io),
             SaveMediaError::Repository(r) => CreateMediaError::Repository(r),
             SaveMediaError::Tag(t) => CreateMediaError::Tag(t),
         })?;
-    let url = url::Url::parse(&format!("file:///{}", dest_path.display()))
-        .map_err(CreateMediaError::Url)?;
-    Ok(Some(model::Media::new(id, url, None)))
+    Ok(Some(media))
 }
 
 #[derive(Debug)]
@@ -180,6 +181,7 @@ mod tests {
 
         fn save_media(
             &self,
+            _media: &model::Media,
             _src_path: &std::path::Path,
             _dest_path: &std::path::Path,
         ) -> Result<(), SaveMediaError<Self::Error>> {
@@ -187,6 +189,22 @@ mod tests {
                 Err(SaveMediaError::Repository(StubError))
             } else {
                 Ok(())
+            }
+        }
+
+        fn save_media_record(&self, _media: &model::Media) -> Result<(), Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn get_media(&self, _id: &model::MediaId) -> Result<Option<model::Media>, Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
+            } else {
+                Ok(None)
             }
         }
     }

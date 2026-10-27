@@ -1,4 +1,4 @@
-use crate::model::MediaId;
+use crate::model::{Media, MediaId};
 use std::path::Path;
 
 pub trait MediaRepository {
@@ -7,9 +7,12 @@ pub trait MediaRepository {
     fn media_exists(&self, id: &MediaId) -> Result<bool, Self::Error>;
     fn save_media(
         &self,
+        media: &Media,
         src_path: &Path,
         dest_path: &Path,
     ) -> Result<(), SaveMediaError<Self::Error>>;
+    fn save_media_record(&self, media: &Media) -> Result<(), Self::Error>;
+    fn get_media(&self, id: &MediaId) -> Result<Option<Media>, Self::Error>;
 }
 
 pub trait TagRepository {

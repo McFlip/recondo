@@ -1,4 +1,4 @@
-use recondo_domain::model::{MediaId, Tag};
+use recondo_domain::model::{Media, MediaId, Tag};
 use recondo_domain::repository::{MediaRepository, SaveMediaError, TagRepository};
 use redb::{Database, Error, ReadableDatabase, ReadableTable, TableDefinition};
 use std::fs;
@@ -9,6 +9,7 @@ type EdgeFrmMedia = (String, String);
 // Relationship, Media ID
 type EdgeFrmTag = (String, String);
 
+const MEDIA: TableDefinition<&str, &str> = TableDefinition::new("MEDIA");
 const MEDIA_ADJ_LST: TableDefinition<&str, Vec<EdgeFrmMedia>> =
     TableDefinition::new("MEDIA_ADJ_LST");
 const TAG_ADJ_LST: TableDefinition<&str, Vec<EdgeFrmTag>> = TableDefinition::new("TAG_ADJ_LST");
@@ -45,6 +46,7 @@ impl std::error::Error for AddTagEdgeError {
 
 pub fn init_db(db: &Database) -> Result<(), Error> {
     let write_txn = db.begin_write()?;
+    let _ = write_txn.open_table(MEDIA)?;
     let _ = write_txn.open_table(MEDIA_ADJ_LST)?;
     let _ = write_txn.open_table(TAG_ADJ_LST)?;
     write_txn.commit()?;
@@ -56,6 +58,32 @@ pub fn does_media_exist(db: &Database, id: MediaId) -> Result<bool, Error> {
     let table = read_txn.open_table(MEDIA_ADJ_LST)?;
     let value = table.get(id.as_str())?;
     Ok(value.is_some())
+}
+
+pub fn insert_media_record_txn(txn: &redb::WriteTransaction, media: &Media) -> Result<(), Error> {
+    let json = serde_json::to_string(media)
+        .map_err(|e| Error::Corrupted(format!("Failed to serialize media: {e}")))?;
+    let mut table = txn.open_table(MEDIA)?;
+    table.insert(media.id.as_str(), json.as_str())?;
+    Ok(())
+}
+
+pub fn put_media_record(db: &Database, media: &Media) -> Result<(), Error> {
+    let write_txn = db.begin_write()?;
+    insert_media_record_txn(&write_txn, media)?;
+    write_txn.commit()?;
+    Ok(())
+}
+
+pub fn get_media_by_id(db: &Database, id: &MediaId) -> Result<Option<Media>, Error> {
+    let read_txn = db.begin_read()?;
+    let table = read_txn.open_table(MEDIA)?;
+    let Some(value) = table.get(id.as_str())? else {
+        return Ok(None);
+    };
+    let media: Media = serde_json::from_str(value.value())
+        .map_err(|e| Error::Corrupted(format!("Failed to deserialize media: {e}")))?;
+    Ok(Some(media))
 }
 
 pub struct RedbMediaRepository {
@@ -85,6 +113,7 @@ impl MediaRepository for RedbMediaRepository {
 
     fn save_media(
         &self,
+        media: &Media,
         src_path: &Path,
         dest_path: &Path,
     ) -> Result<(), SaveMediaError<Self::Error>> {
@@ -109,6 +138,9 @@ impl MediaRepository for RedbMediaRepository {
             .begin_write()
             .map_err(|e| SaveMediaError::Repository(e.into()))?;
         {
+            insert_media_record_txn(&write_txn, media)
+                .map_err(SaveMediaError::Repository)?;
+
             let tag = Tag::new("needs tags").map_err(|e| SaveMediaError::Tag(Box::new(e)))?;
             let media_edge = ("to do".to_string(), tag.id().to_string());
             let tag_edge = ("to do".to_string(), hash.to_string());
@@ -145,11 +177,19 @@ impl MediaRepository for RedbMediaRepository {
                     .map_err(|e| SaveMediaError::Repository(e.into()))?;
             }
         }
-        if let Err(e) = write_txn.commit() {
+        write_txn.commit().map_err(|e| {
             let _ = fs::remove_file(dest_path);
-            return Err(SaveMediaError::Repository(e.into()));
-        }
+            SaveMediaError::Repository(e.into())
+        })?;
         Ok(())
+    }
+
+    fn save_media_record(&self, media: &Media) -> Result<(), Self::Error> {
+        put_media_record(&self.db, media)
+    }
+
+    fn get_media(&self, id: &MediaId) -> Result<Option<Media>, Self::Error> {
+        get_media_by_id(&self.db, id)
     }
 }
 
@@ -227,6 +267,14 @@ mod tests {
         base
     }
 
+    fn make_test_media(id_str: &str) -> Media {
+        Media::new(
+            MediaId::from_hash(id_str).unwrap(),
+            url::Url::parse(&format!("file:///assets/{id_str}.txt")).unwrap(),
+            None,
+        )
+    }
+
     #[test]
     fn test_save_media_copies_and_inserts() {
         let base = temp_base("copy");
@@ -240,24 +288,32 @@ mod tests {
         init_db(&db).unwrap();
         let repo = RedbMediaRepository::new(db);
 
-        repo.save_media(&src, &dest).unwrap();
+        let media = make_test_media("hash123");
+        repo.save_media(&media, &src, &dest).unwrap();
 
         assert_eq!(fs::read(&dest).unwrap(), b"hello");
 
         let read_txn = repo.database().begin_read().unwrap();
         let media_table = read_txn.open_table(MEDIA_ADJ_LST).unwrap();
-        let media = media_table.get("hash123").unwrap().unwrap();
+        let media_edge = media_table.get("hash123").unwrap().unwrap();
         let tag_table = read_txn.open_table(TAG_ADJ_LST).unwrap();
         let expected_tag = Tag::new("needs tags").unwrap().id().to_string();
         let tag = tag_table.get(expected_tag.as_str()).unwrap().unwrap();
         assert_eq!(
-            media.value(),
+            media_edge.value(),
             vec![("to do".to_string(), expected_tag.to_string())]
         );
         assert_eq!(
             tag.value(),
             vec![("to do".to_string(), "hash123".to_string())]
         );
+
+        let fetched = repo
+            .get_media(&MediaId::from_hash("hash123").unwrap())
+            .unwrap()
+            .expect("media record should exist in MEDIA table");
+        assert_eq!(fetched.id.as_str(), "hash123");
+        assert_eq!(fetched.url, media.url);
 
         let _ = fs::remove_dir_all(&base);
     }
@@ -276,9 +332,11 @@ mod tests {
         init_db(&db).unwrap();
         let repo = RedbMediaRepository::new(db);
 
-        repo.save_media(&src_a, &base.join("assets").join("hash_a.txt"))
+        let media_a = make_test_media("hash_a");
+        let media_b = make_test_media("hash_b");
+        repo.save_media(&media_a, &src_a, &base.join("assets").join("hash_a.txt"))
             .unwrap();
-        repo.save_media(&src_b, &base.join("assets").join("hash_b.txt"))
+        repo.save_media(&media_b, &src_b, &base.join("assets").join("hash_b.txt"))
             .unwrap();
 
         let read_txn = repo.database().begin_read().unwrap();
@@ -309,13 +367,14 @@ mod tests {
         init_db(&db).unwrap();
         let repo = RedbMediaRepository::new(db);
 
-        repo.save_media(&src, &dest).unwrap();
-        repo.save_media(&src, &dest).unwrap();
+        let media = make_test_media("hash123");
+        repo.save_media(&media, &src, &dest).unwrap();
+        repo.save_media(&media, &src, &dest).unwrap();
 
         let read_txn = repo.database().begin_read().unwrap();
         let media_table = read_txn.open_table(MEDIA_ADJ_LST).unwrap();
-        let media = media_table.get("hash123").unwrap().unwrap();
-        assert_eq!(media.value().len(), 1);
+        let media_edge = media_table.get("hash123").unwrap().unwrap();
+        assert_eq!(media_edge.value().len(), 1);
 
         let tag_table = read_txn.open_table(TAG_ADJ_LST).unwrap();
         let expected_tag = Tag::new("needs tags").unwrap().id().to_string();
@@ -337,7 +396,8 @@ mod tests {
         init_db(&db).unwrap();
         let repo = RedbMediaRepository::new(db);
 
-        let result = repo.save_media(&src, &dest);
+        let media = make_test_media("hash123");
+        let result = repo.save_media(&media, &src, &dest);
         assert!(matches!(result, Err(SaveMediaError::Io(_))));
         assert!(!dest.exists());
 
@@ -357,9 +417,51 @@ mod tests {
         init_db(&db).unwrap();
         let repo = RedbMediaRepository::new(db);
 
-        repo.save_media(&src, &dest).unwrap();
+        let media = make_test_media("hash999");
+        repo.save_media(&media, &src, &dest).unwrap();
         assert!(dest.exists());
         assert_eq!(fs::read(&dest).unwrap(), b"data");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_put_media_record_and_get_media() {
+        let base = temp_base("put_get_media");
+        let db_path = base.join("test.redb");
+        let db = Database::create(&db_path).unwrap();
+        init_db(&db).unwrap();
+        let repo = RedbMediaRepository::new(db);
+
+        let id = MediaId::from_hash("record123").unwrap();
+        let url = url::Url::parse("file:///assets/record123.png").unwrap();
+        let mut media = Media::new(
+            id.clone(),
+            url.clone(),
+            Some(recondo_domain::model::MediaOpts {
+                title: Some("Title 1".to_string()),
+                mime_type: Some("image/png".to_string()),
+                file_size: Some(2048),
+                view_count: Some(10),
+            }),
+        );
+
+        // Insert
+        repo.save_media_record(&media).unwrap();
+
+        let fetched = repo.get_media(&id).unwrap().expect("media should exist");
+        assert_eq!(fetched.id, id);
+        assert_eq!(fetched.title, Some("Title 1".to_string()));
+        assert_eq!(fetched.view_count, 10);
+
+        // Update
+        media.title = Some("Updated Title".to_string());
+        media.view_count = 11;
+        repo.save_media_record(&media).unwrap();
+
+        let updated = repo.get_media(&id).unwrap().expect("media should exist");
+        assert_eq!(updated.title, Some("Updated Title".to_string()));
+        assert_eq!(updated.view_count, 11);
 
         let _ = fs::remove_dir_all(&base);
     }
@@ -376,9 +478,11 @@ mod tests {
             repo.add_tag_edge("missing", "tag-id", "liked"),
             Err(AddTagEdgeError::MediaNotFound)
         ));
-        assert!(!repo
-            .media_exists(&MediaId::from_hash("missing").unwrap())
-            .unwrap());
+        assert!(
+            !repo
+                .media_exists(&MediaId::from_hash("missing").unwrap())
+                .unwrap()
+        );
         assert!(!repo.tag_exists("tag-id").unwrap());
 
         let _ = fs::remove_dir_all(&base);

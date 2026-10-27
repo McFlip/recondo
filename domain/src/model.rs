@@ -1,10 +1,11 @@
 use std::error::Error;
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaId(String);
 
 impl MediaId {
@@ -37,7 +38,7 @@ impl fmt::Display for MediaIdError {
 
 impl Error for MediaIdError {}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Media {
     pub id: MediaId,
     pub url: Url,
@@ -47,7 +48,7 @@ pub struct Media {
     pub view_count: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaOpts {
     pub title: Option<String>,
     pub mime_type: Option<String>,

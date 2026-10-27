@@ -12,5 +12,6 @@ categories.workspace = true
 [dependencies]
 blake3 = "1"
 hex = "0.4"
+serde = { version = "1", features = ["derive"] }
 unicode-normalization = "0.1"
-url = "2"
+url = { version = "2", features = ["serde"] }
