@@ -123,6 +123,34 @@ impl Tag {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelationshipError {
+    Empty,
+}
+
+impl fmt::Display for RelationshipError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "relationship must not be empty"),
+        }
+    }
+}
+
+impl Error for RelationshipError {}
+
+pub fn normalize_relationship(s: impl AsRef<str>) -> String {
+    s.as_ref().trim().to_lowercase().nfc().collect()
+}
+
+pub fn new_relationship(s: impl AsRef<str>) -> Result<String, RelationshipError> {
+    let rel = normalize_relationship(s);
+    if rel.is_empty() {
+        Err(RelationshipError::Empty)
+    } else {
+        Ok(rel)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edge {
     label: String,
@@ -132,6 +160,7 @@ pub struct Edge {
 
 impl Edge {
     pub fn new(label: String, media: String, tag: String) -> Result<Self, EdgeError> {
+        let label = normalize_relationship(label);
         if label.is_empty() {
             return Err(EdgeError::EmptyLabel);
         }

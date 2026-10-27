@@ -195,6 +195,13 @@ mod tests {
             }
             Ok(self.tags.get(tag_id).cloned())
         }
+
+        fn add_tag_to_relationship(&self, _relationship: &str, _tag_id: &str) -> Result<(), Self::Error> {
+            if self.should_fail {
+                return Err(MockError);
+            }
+            Ok(())
+        }
     }
 
     #[test]

@@ -73,6 +73,7 @@ pub fn create_media_from_file<R: MediaRepository>(
             SaveMediaError::Repository(r) => CreateMediaError::Repository(r),
             SaveMediaError::Tag(t) => CreateMediaError::Tag(t),
         })?;
+
     Ok(Some(media))
 }
 
@@ -256,6 +257,14 @@ mod tests {
                 Err(StubError)
             } else {
                 Ok(None)
+            }
+        }
+
+        fn add_tag_to_relationship(&self, _relationship: &str, _tag_id: &str) -> Result<(), Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
+            } else {
+                Ok(())
             }
         }
     }

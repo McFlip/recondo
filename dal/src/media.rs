@@ -1,4 +1,4 @@
-use recondo_domain::model::{Media, MediaId, Tag};
+use recondo_domain::model::{normalize_relationship, Media, MediaId, Tag};
 use recondo_domain::repository::{MediaRepository, SaveMediaError, TagRepository};
 use redb::{Database, Error, ReadableDatabase, ReadableTable, TableDefinition};
 use std::fs;
@@ -13,6 +13,8 @@ const MEDIA: TableDefinition<&str, &str> = TableDefinition::new("MEDIA");
 const MEDIA_ADJ_LST: TableDefinition<&str, Vec<EdgeFrmMedia>> =
     TableDefinition::new("MEDIA_ADJ_LST");
 const TAG_ADJ_LST: TableDefinition<&str, Vec<EdgeFrmTag>> = TableDefinition::new("TAG_ADJ_LST");
+const RELATIONSHIP_TO_TAGS: TableDefinition<&str, Vec<String>> =
+    TableDefinition::new("RELATIONSHIP_TO_TAGS");
 
 #[derive(Debug)]
 pub enum AddTagEdgeError {
@@ -49,6 +51,7 @@ pub fn init_db(db: &Database) -> Result<(), Error> {
     let _ = write_txn.open_table(MEDIA)?;
     let _ = write_txn.open_table(MEDIA_ADJ_LST)?;
     let _ = write_txn.open_table(TAG_ADJ_LST)?;
+    let _ = write_txn.open_table(RELATIONSHIP_TO_TAGS)?;
     write_txn.commit()?;
     Ok(())
 }
@@ -107,6 +110,71 @@ pub fn get_tag_adj_list(db: &Database, tag_id: &str) -> Result<Option<Vec<EdgeFr
     Ok(Some(value.value()))
 }
 
+#[derive(Debug)]
+pub enum RelationshipSetError {
+    EmptyRelationship,
+    Repository(Error),
+}
+
+impl RelationshipSetError {
+    fn repository<E: Into<Error>>(error: E) -> Self {
+        Self::Repository(error.into())
+    }
+}
+
+impl std::fmt::Display for RelationshipSetError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyRelationship => write!(f, "relationship must not be empty"),
+            Self::Repository(e) => write!(f, "repository error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for RelationshipSetError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::EmptyRelationship => None,
+            Self::Repository(e) => Some(e),
+        }
+    }
+}
+
+pub fn upsert_relationship_tag_txn(
+    txn: &redb::WriteTransaction,
+    relationship: &str,
+    tag_id: &str,
+) -> Result<(), RelationshipSetError> {
+    let relationship = normalize_relationship(relationship);
+    if relationship.is_empty() {
+        return Err(RelationshipSetError::EmptyRelationship);
+    }
+    let mut table = txn
+        .open_table(RELATIONSHIP_TO_TAGS)
+        .map_err(RelationshipSetError::repository)?;
+    let existing = table
+        .get(relationship.as_str())
+        .map_err(RelationshipSetError::repository)?
+        .map(|value| value.value())
+        .unwrap_or_default();
+    if existing.contains(&tag_id.to_string()) {
+        return Ok(());
+    }
+    let mut tags = existing;
+    tags.push(tag_id.to_string());
+    table
+        .insert(relationship.as_str(), tags)
+        .map_err(RelationshipSetError::repository)?;
+    Ok(())
+}
+
+pub fn upsert_relationship_tag(db: &Database, relationship: &str, tag_id: &str) -> Result<(), RelationshipSetError> {
+    let write_txn = db.begin_write().map_err(RelationshipSetError::repository)?;
+    upsert_relationship_tag_txn(&write_txn, relationship, tag_id)?;
+    write_txn.commit().map_err(RelationshipSetError::repository)?;
+    Ok(())
+}
+
 pub struct RedbMediaRepository {
     db: Database,
 }
@@ -163,8 +231,9 @@ impl MediaRepository for RedbMediaRepository {
                 .map_err(SaveMediaError::Repository)?;
 
             let tag = Tag::new("needs tags").map_err(|e| SaveMediaError::Tag(Box::new(e)))?;
-            let media_edge = ("to do".to_string(), tag.id().to_string());
-            let tag_edge = ("to do".to_string(), hash.to_string());
+            let relationship = normalize_relationship("to do");
+            let media_edge = (relationship.clone(), tag.id().to_string());
+            let tag_edge = (relationship.clone(), hash.to_string());
 
             let mut media_table = write_txn
                 .open_table(MEDIA_ADJ_LST)
@@ -197,6 +266,16 @@ impl MediaRepository for RedbMediaRepository {
                     .insert(tag.id(), edges)
                     .map_err(|e| SaveMediaError::Repository(e.into()))?;
             }
+
+            upsert_relationship_tag_txn(&write_txn, &relationship, tag.id()).map_err(|e| match e {
+                RelationshipSetError::EmptyRelationship => {
+                    SaveMediaError::Tag(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "relationship must not be empty",
+                    )))
+                }
+                RelationshipSetError::Repository(err) => SaveMediaError::Repository(err),
+            })?;
         }
         write_txn.commit().map_err(|e| {
             let _ = fs::remove_file(dest_path);
@@ -240,9 +319,16 @@ impl TagRepository for RedbMediaRepository {
     }
 
     fn add_tag_edge(&self, media_id: &str, tag_id: &str, label: &str) -> Result<(), Self::Error> {
+        let label = normalize_relationship(label);
+        if label.is_empty() {
+            return Err(AddTagEdgeError::repository(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "label must not be empty",
+            )));
+        }
         let write_txn = self.db.begin_write().map_err(AddTagEdgeError::repository)?;
         {
-            let media_edge = (label.to_string(), tag_id.to_string());
+            let media_edge = (label.clone(), tag_id.to_string());
             let mut media_table = write_txn
                 .open_table(MEDIA_ADJ_LST)
                 .map_err(AddTagEdgeError::repository)?;
@@ -259,7 +345,7 @@ impl TagRepository for RedbMediaRepository {
                     .map_err(AddTagEdgeError::repository)?;
             }
 
-            let tag_edge = (label.to_string(), media_id.to_string());
+            let tag_edge = (label.clone(), media_id.to_string());
             let mut tag_table = write_txn
                 .open_table(TAG_ADJ_LST)
                 .map_err(AddTagEdgeError::repository)?;
@@ -275,6 +361,9 @@ impl TagRepository for RedbMediaRepository {
                     .insert(tag_id, edges)
                     .map_err(AddTagEdgeError::repository)?;
             }
+
+            upsert_relationship_tag_txn(&write_txn, &label, tag_id)
+                .map_err(|e| AddTagEdgeError::repository(e))?;
         }
         write_txn.commit().map_err(AddTagEdgeError::repository)?;
         Ok(())
@@ -285,6 +374,18 @@ impl TagRepository for RedbMediaRepository {
         tag_id: &str,
     ) -> Result<Option<Vec<(String, String)>>, Self::Error> {
         get_tag_adj_list(&self.db, tag_id).map_err(AddTagEdgeError::repository)
+    }
+
+    fn add_tag_to_relationship(&self, relationship: &str, tag_id: &str) -> Result<(), Self::Error> {
+        upsert_relationship_tag(&self.db, relationship, tag_id).map_err(|e| match e {
+            RelationshipSetError::EmptyRelationship => {
+                AddTagEdgeError::repository(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "relationship must not be empty",
+                ))
+            }
+            RelationshipSetError::Repository(err) => AddTagEdgeError::repository(err),
+        })
     }
 }
 
@@ -558,6 +659,113 @@ mod tests {
         let missing_media = MediaId::from_hash("not_here").unwrap();
         assert_eq!(repo.get_media_adj_list(&missing_media).unwrap(), None);
         assert_eq!(repo.get_tag_adj_list("not_here").unwrap(), None);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_relationship_set_populated_on_save() {
+        let base = temp_base("relationship_set_save");
+        let src = base.join("src.txt");
+        let dest = base.join("assets").join("hash123.txt");
+        fs::write(&src, b"test").unwrap();
+
+        let db_path = base.join("test.redb");
+        let db = Database::create(&db_path).unwrap();
+        init_db(&db).unwrap();
+        let repo = RedbMediaRepository::new(db);
+
+        let media = make_test_media("hash123");
+        repo.save_media(&media, &src, &dest).unwrap();
+
+        let tag_id = Tag::new("needs tags").unwrap().id().to_string();
+
+        let read_txn = repo.database().begin_read().unwrap();
+        let rel_table = read_txn.open_table(RELATIONSHIP_TO_TAGS).unwrap();
+        let rel = rel_table.get("to do").unwrap().unwrap();
+        assert_eq!(rel.value(), vec![tag_id]);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_relationship_set_dedup_on_save() {
+        let base = temp_base("relationship_set_dedup_save");
+        let src = base.join("src.txt");
+        let dest = base.join("assets").join("hash123.txt");
+        fs::write(&src, b"test").unwrap();
+
+        let db_path = base.join("test.redb");
+        let db = Database::create(&db_path).unwrap();
+        init_db(&db).unwrap();
+        let repo = RedbMediaRepository::new(db);
+
+        let media = make_test_media("hash123");
+        repo.save_media(&media, &src, &dest).unwrap();
+        repo.save_media(&media, &src, &dest).unwrap();
+
+        let tag_id = Tag::new("needs tags").unwrap().id().to_string();
+
+        let read_txn = repo.database().begin_read().unwrap();
+        let rel_table = read_txn.open_table(RELATIONSHIP_TO_TAGS).unwrap();
+        let rel = rel_table.get("to do").unwrap().unwrap();
+        assert_eq!(rel.value(), vec![tag_id]);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_add_tag_edge_updates_relationship_set() {
+        let base = temp_base("relationship_set_edge");
+        let src = base.join("src.txt");
+        let dest = base.join("assets").join("hash123.txt");
+        fs::write(&src, b"test").unwrap();
+
+        let db_path = base.join("test.redb");
+        let db = Database::create(&db_path).unwrap();
+        init_db(&db).unwrap();
+        let repo = RedbMediaRepository::new(db);
+
+        let media = make_test_media("hash123");
+        repo.save_media(&media, &src, &dest).unwrap();
+
+        let tag = Tag::new("landscape").unwrap();
+        repo.add_tag_edge("hash123", tag.id(), "LIKED").unwrap();
+        repo.add_tag_edge("hash123", tag.id(), "LIKED").unwrap();
+
+        let read_txn = repo.database().begin_read().unwrap();
+        let rel_table = read_txn.open_table(RELATIONSHIP_TO_TAGS).unwrap();
+        let liked = rel_table.get("liked").unwrap().unwrap();
+        assert_eq!(liked.value(), vec![tag.id().to_string()]);
+
+        let todo = rel_table.get("to do").unwrap().unwrap();
+        assert_eq!(todo.value(), vec![Tag::new("needs tags").unwrap().id().to_string()]);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_upsert_relationship_tag_txn_normalization_and_empty() {
+        let base = temp_base("relationship_normalize");
+        let db_path = base.join("test.redb");
+        let db = Database::create(&db_path).unwrap();
+        init_db(&db).unwrap();
+
+        let write_txn = db.begin_write().unwrap();
+        upsert_relationship_tag_txn(&write_txn, "  TO DO  ", "tag1").unwrap();
+        upsert_relationship_tag_txn(&write_txn, "to do", "tag1").unwrap();
+        upsert_relationship_tag_txn(&write_txn, "To Do", "tag2").unwrap();
+        write_txn.commit().unwrap();
+
+        let read_txn = db.begin_read().unwrap();
+        let rel_table = read_txn.open_table(RELATIONSHIP_TO_TAGS).unwrap();
+        let rel = rel_table.get("to do").unwrap().unwrap();
+        assert_eq!(rel.value(), vec!["tag1".to_string(), "tag2".to_string()]);
+
+        let write_txn = db.begin_write().unwrap();
+        let err = upsert_relationship_tag_txn(&write_txn, "   ", "tag3").unwrap_err();
+        assert!(matches!(err, RelationshipSetError::EmptyRelationship));
+        write_txn.abort().unwrap();
 
         let _ = fs::remove_dir_all(&base);
     }

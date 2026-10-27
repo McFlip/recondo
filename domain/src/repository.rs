@@ -33,6 +33,7 @@ pub trait TagRepository {
         &self,
         tag_id: &str,
     ) -> Result<Option<Vec<(String, String)>>, Self::Error>;
+    fn add_tag_to_relationship(&self, relationship: &str, tag_id: &str) -> Result<(), Self::Error>;
 }
 
 #[derive(Debug)]
