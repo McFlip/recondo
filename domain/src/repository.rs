@@ -1,4 +1,4 @@
-use crate::model::{Media, MediaId};
+use crate::model::{Media, MediaId, Tag};
 use std::path::Path;
 
 pub trait MediaRepository {
@@ -26,7 +26,7 @@ pub trait TagRepository {
     fn add_tag_edge(
         &self,
         media_id: &str,
-        tag_id: &str,
+        tag: &Tag,
         label: &str,
     ) -> Result<(), Self::Error>;
     fn get_tag_adj_list(
@@ -38,6 +38,10 @@ pub trait TagRepository {
         prefix: &str,
         limit: Option<usize>,
     ) -> Result<Option<Vec<String>>, Self::Error>;
+    fn get_tags_by_relationship(
+        &self,
+        relationship: &str,
+    ) -> Result<Option<Vec<Tag>>, Self::Error>;
 }
 
 #[derive(Debug)]

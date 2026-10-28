@@ -120,7 +120,7 @@ pub fn add_tag_to_media<R: TagRepository>(
         return Err(AddTagError::EmptyLabel);
     }
     let tag = model::Tag::new(tag_name).map_err(AddTagError::Tag)?;
-    repo.add_tag_edge(media_id, tag.id(), label)
+    repo.add_tag_edge(media_id, &tag, label)
         .map_err(AddTagError::Repository)?;
     Ok(tag)
 }
@@ -239,7 +239,7 @@ mod tests {
         fn add_tag_edge(
             &self,
             _media_id: &str,
-            _tag_id: &str,
+            _tag: &model::Tag,
             _label: &str,
         ) -> Result<(), Self::Error> {
             if self.error.is_some() {
@@ -265,6 +265,17 @@ mod tests {
             _prefix: &str,
             _limit: Option<usize>,
         ) -> Result<Option<Vec<String>>, Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn get_tags_by_relationship(
+            &self,
+            _relationship: &str,
+        ) -> Result<Option<Vec<model::Tag>>, Self::Error> {
             if self.error.is_some() {
                 Err(StubError)
             } else {

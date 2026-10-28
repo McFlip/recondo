@@ -1,4 +1,4 @@
-use crate::model::{normalize_relationship, Media, MediaId};
+use crate::model::{Media, MediaId, Tag, normalize_relationship};
 use crate::repository::{MediaRepository, TagRepository};
 
 /// Query function to retrieve a Media item by its ID.
@@ -40,6 +40,18 @@ pub fn get_relationships_by_prefix<R: TagRepository>(
         return Ok(None);
     }
     repo.get_relationships_by_prefix(&normalized, limit)
+}
+
+/// Query function to retrieve the Tags associated with a given relationship.
+pub fn get_tags_by_relationship<R: TagRepository>(
+    relationship: &str,
+    repo: &R,
+) -> Result<Option<Vec<Tag>>, R::Error> {
+    let normalized = normalize_relationship(relationship);
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    repo.get_tags_by_relationship(&normalized)
 }
 
 #[cfg(test)]
@@ -154,6 +166,7 @@ mod tests {
     struct MockTagRepo {
         tags: HashMap<String, Vec<(String, String)>>,
         relationships: Vec<String>,
+        relationship_tags: HashMap<String, Vec<Tag>>,
         should_fail: bool,
     }
 
@@ -162,6 +175,7 @@ mod tests {
             Self {
                 tags: HashMap::new(),
                 relationships: Vec::new(),
+                relationship_tags: HashMap::new(),
                 should_fail: false,
             }
         }
@@ -180,6 +194,7 @@ mod tests {
             Self {
                 tags: HashMap::new(),
                 relationships: Vec::new(),
+                relationship_tags: HashMap::new(),
                 should_fail: true,
             }
         }
@@ -202,7 +217,7 @@ mod tests {
         fn add_tag_edge(
             &self,
             _media_id: &str,
-            _tag_id: &str,
+            _tag: &Tag,
             _label: &str,
         ) -> Result<(), Self::Error> {
             if self.should_fail {
@@ -245,6 +260,19 @@ mod tests {
                 Ok(None)
             } else {
                 Ok(Some(matches))
+            }
+        }
+
+        fn get_tags_by_relationship(
+            &self,
+            relationship: &str,
+        ) -> Result<Option<Vec<Tag>>, Self::Error> {
+            if self.should_fail {
+                return Err(MockError);
+            }
+            match self.relationship_tags.get(relationship) {
+                Some(tags) if !tags.is_empty() => Ok(Some(tags.clone())),
+                _ => Ok(None),
             }
         }
     }
@@ -354,20 +382,25 @@ mod tests {
 
     #[test]
     fn test_get_relationships_by_prefix_found() {
-        let repo = MockTagRepo::new()
-            .with_relationships(vec!["to do", "total recall", "unique"]);
+        let repo = MockTagRepo::new().with_relationships(vec!["to do", "total recall", "unique"]);
 
         let result = get_relationships_by_prefix("to", None, &repo).unwrap();
-        assert_eq!(result, Some(vec!["to do".to_string(), "total recall".to_string()]));
+        assert_eq!(
+            result,
+            Some(vec!["to do".to_string(), "total recall".to_string()])
+        );
     }
 
     #[test]
     fn test_get_relationships_by_prefix_with_limit() {
-        let repo = MockTagRepo::new()
-            .with_relationships(vec!["to do", "total recall", "to another"]);
+        let repo =
+            MockTagRepo::new().with_relationships(vec!["to do", "total recall", "to another"]);
 
         let result = get_relationships_by_prefix("to", Some(2), &repo).unwrap();
-        assert_eq!(result, Some(vec!["to do".to_string(), "total recall".to_string()]));
+        assert_eq!(
+            result,
+            Some(vec!["to do".to_string(), "total recall".to_string()])
+        );
 
         let result_zero = get_relationships_by_prefix("to", Some(0), &repo).unwrap();
         assert_eq!(result_zero, None);
@@ -386,7 +419,10 @@ mod tests {
         let repo = MockTagRepo::new().with_relationships(vec!["to do"]);
 
         assert_eq!(get_relationships_by_prefix("", None, &repo).unwrap(), None);
-        assert_eq!(get_relationships_by_prefix("   ", None, &repo).unwrap(), None);
+        assert_eq!(
+            get_relationships_by_prefix("   ", None, &repo).unwrap(),
+            None
+        );
     }
 
     #[test]

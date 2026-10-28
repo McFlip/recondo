@@ -70,7 +70,7 @@ impl Media {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tag {
     id: String,
     name: String,
@@ -112,6 +112,13 @@ impl Tag {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub fn from_parts(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+        }
     }
 
     /// Checks whether this tag already exists in the repository's tag adjacency list.

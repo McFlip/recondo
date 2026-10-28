@@ -13,6 +13,7 @@ const MEDIA: TableDefinition<&str, &str> = TableDefinition::new("MEDIA");
 const MEDIA_ADJ_LST: TableDefinition<&str, Vec<EdgeFrmMedia>> =
     TableDefinition::new("MEDIA_ADJ_LST");
 const TAG_ADJ_LST: TableDefinition<&str, Vec<EdgeFrmTag>> = TableDefinition::new("TAG_ADJ_LST");
+const TAG: TableDefinition<&str, &str> = TableDefinition::new("TAG");
 const RELATIONSHIP_TO_TAGS: TableDefinition<&str, Vec<String>> =
     TableDefinition::new("RELATIONSHIP_TO_TAGS");
 
@@ -51,6 +52,7 @@ pub fn init_db(db: &Database) -> Result<(), Error> {
     let _ = write_txn.open_table(MEDIA)?;
     let _ = write_txn.open_table(MEDIA_ADJ_LST)?;
     let _ = write_txn.open_table(TAG_ADJ_LST)?;
+    let _ = write_txn.open_table(TAG)?;
     let _ = write_txn.open_table(RELATIONSHIP_TO_TAGS)?;
     write_txn.commit()?;
     Ok(())
@@ -134,6 +136,35 @@ pub fn get_relationships_by_prefix(
         Ok(None)
     } else {
         Ok(Some(matches))
+    }
+}
+
+pub fn get_tags_by_relationship(
+    db: &Database,
+    relationship: &str,
+) -> Result<Option<Vec<Tag>>, Error> {
+    let read_txn = db.begin_read()?;
+    let rel_table = read_txn.open_table(RELATIONSHIP_TO_TAGS)?;
+    let Some(value) = rel_table.get(relationship)? else {
+        return Ok(None);
+    };
+    let tag_ids = value.value();
+    if tag_ids.is_empty() {
+        return Ok(None);
+    }
+    let tag_table = read_txn.open_table(TAG)?;
+    let mut tags = Vec::new();
+    for id in tag_ids {
+        let name = tag_table
+            .get(id.as_str())?
+            .map(|v| v.value().to_string())
+            .unwrap_or_else(|| id.clone());
+        tags.push(Tag::from_parts(id.clone(), name));
+    }
+    if tags.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(tags))
     }
 }
 
@@ -286,6 +317,13 @@ impl MediaRepository for RedbMediaRepository {
                     .map_err(|e| SaveMediaError::Repository(e.into()))?;
             }
 
+            let mut tag_name_table = write_txn
+                .open_table(TAG)
+                .map_err(|e| SaveMediaError::Repository(e.into()))?;
+            tag_name_table
+                .insert(tag.id(), tag.name())
+                .map_err(|e| SaveMediaError::Repository(e.into()))?;
+
             upsert_relationship_tag_txn(&write_txn, &relationship, tag.id()).map_err(
                 |e| match e {
                     RelationshipSetError::EmptyRelationship => {
@@ -339,7 +377,7 @@ impl TagRepository for RedbMediaRepository {
             .is_some())
     }
 
-    fn add_tag_edge(&self, media_id: &str, tag_id: &str, label: &str) -> Result<(), Self::Error> {
+    fn add_tag_edge(&self, media_id: &str, tag: &Tag, label: &str) -> Result<(), Self::Error> {
         let label = normalize_relationship(label);
         if label.is_empty() {
             return Err(AddTagEdgeError::repository(std::io::Error::new(
@@ -347,6 +385,7 @@ impl TagRepository for RedbMediaRepository {
                 "label must not be empty",
             )));
         }
+        let tag_id = tag.id();
         let write_txn = self.db.begin_write().map_err(AddTagEdgeError::repository)?;
         {
             let media_edge = (label.clone(), tag_id.to_string());
@@ -383,6 +422,13 @@ impl TagRepository for RedbMediaRepository {
                     .map_err(AddTagEdgeError::repository)?;
             }
 
+            let mut tag_name_table = write_txn
+                .open_table(TAG)
+                .map_err(AddTagEdgeError::repository)?;
+            tag_name_table
+                .insert(tag_id, tag.name())
+                .map_err(AddTagEdgeError::repository)?;
+
             upsert_relationship_tag_txn(&write_txn, &label, tag_id)
                 .map_err(AddTagEdgeError::repository)?;
         }
@@ -400,6 +446,13 @@ impl TagRepository for RedbMediaRepository {
         limit: Option<usize>,
     ) -> Result<Option<Vec<String>>, Self::Error> {
         get_relationships_by_prefix(&self.db, prefix, limit).map_err(AddTagEdgeError::repository)
+    }
+
+    fn get_tags_by_relationship(
+        &self,
+        relationship: &str,
+    ) -> Result<Option<Vec<Tag>>, Self::Error> {
+        get_tags_by_relationship(&self.db, relationship).map_err(AddTagEdgeError::repository)
     }
 }
 
@@ -625,7 +678,7 @@ mod tests {
         let repo = RedbMediaRepository::new(db);
 
         assert!(matches!(
-            repo.add_tag_edge("missing", "tag-id", "liked"),
+            repo.add_tag_edge("missing", &Tag::new("tag").unwrap(), "liked"),
             Err(AddTagEdgeError::MediaNotFound)
         ));
         assert!(
@@ -741,8 +794,8 @@ mod tests {
         repo.save_media(&media, &src, &dest).unwrap();
 
         let tag = Tag::new("landscape").unwrap();
-        repo.add_tag_edge("hash123", tag.id(), "LIKED").unwrap();
-        repo.add_tag_edge("hash123", tag.id(), "LIKED").unwrap();
+        repo.add_tag_edge("hash123", &tag, "LIKED").unwrap();
+        repo.add_tag_edge("hash123", &tag, "LIKED").unwrap();
 
         let read_txn = repo.database().begin_read().unwrap();
         let rel_table = read_txn.open_table(RELATIONSHIP_TO_TAGS).unwrap();
@@ -803,10 +856,10 @@ mod tests {
         let tag2 = Tag::new("tag2").unwrap();
         let tag3 = Tag::new("tag3").unwrap();
 
-        repo.add_tag_edge("hash123", tag1.id(), "total recall")
+        repo.add_tag_edge("hash123", &tag1, "total recall")
             .unwrap();
-        repo.add_tag_edge("hash123", tag2.id(), "topic").unwrap();
-        repo.add_tag_edge("hash123", tag3.id(), "other").unwrap();
+        repo.add_tag_edge("hash123", &tag2, "topic").unwrap();
+        repo.add_tag_edge("hash123", &tag3, "other").unwrap();
         // Note: save_media automatically creates a "to do" edge with tag "needs tags"
 
         let matches = repo

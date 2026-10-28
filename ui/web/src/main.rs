@@ -48,5 +48,14 @@ fn main() -> Result<(), Box<dyn StdError>> {
         }
     }
 
+    match qry::get_tags_by_relationship("new relationship", &repo)? {
+        Some(tags) => {
+            println!("Found tags for 'new relationship': {:?}", tags)
+        }
+        None => {
+            eprintln!("Failed to find tags for 'new relationship'")
+        }
+    }
+
     Ok(())
 }
