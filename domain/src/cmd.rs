@@ -43,6 +43,10 @@ pub fn create_media_from_file<R: MediaRepository>(
     repo: &R,
 ) -> Result<Option<model::Media>, CreateMediaError<R::Error>> {
     let mut file = fs::File::open(&src_path).map_err(CreateMediaError::Io)?;
+    let file_size = file.metadata().map_err(CreateMediaError::Io)?.len();
+    let mime_type = infer::get_from_path(&src_path)
+        .map_err(CreateMediaError::Io)?
+        .map(|kind| kind.mime_type().to_string());
     let mut hasher = blake3::Hasher::new();
     let mut buf = [0u8; 65536];
     loop {
@@ -66,7 +70,16 @@ pub fn create_media_from_file<R: MediaRepository>(
         .with_extension(file_ext);
     let url = url::Url::parse(&format!("file:///{}", dest_path.display()))
         .map_err(CreateMediaError::Url)?;
-    let media = model::Media::new(id, url, None);
+    let media = model::Media::new(
+        id,
+        url,
+        Some(model::MediaOpts {
+            title: None,
+            mime_type,
+            file_size: Some(file_size),
+            view_count: None,
+        }),
+    );
     repo.save_media(&media, &src_path, &dest_path)
         .map_err(|e| match e {
             SaveMediaError::Io(io) => CreateMediaError::Io(io),
@@ -311,8 +324,24 @@ mod tests {
         assert_eq!(media.url.as_str(), format!("file:///assets/{hash}.jpg"));
         assert_eq!(media.title, None);
         assert_eq!(media.mime_type, None);
-        assert_eq!(media.file_size, None);
+        assert_eq!(media.file_size, Some(contents.len() as u64));
         assert_eq!(media.view_count, 0);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_create_media_from_file_detects_mime_type() {
+        let contents = b"\x89PNG\r\n\x1a\n";
+        let path = temp_file("detect_mime_type", "bin", contents);
+        let repo = StubRepo::new(&[]);
+
+        let media = create_media_from_file(path.clone(), &repo)
+            .unwrap()
+            .expect("new media should be created");
+
+        assert_eq!(media.mime_type.as_deref(), Some("image/png"));
+        assert_eq!(media.file_size, Some(contents.len() as u64));
 
         let _ = fs::remove_file(path);
     }
