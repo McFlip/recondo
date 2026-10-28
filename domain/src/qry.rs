@@ -1,5 +1,6 @@
 use crate::model::{Media, MediaId, Tag, normalize_relationship};
 use crate::repository::{MediaRepository, TagRepository};
+use std::collections::HashSet;
 
 /// Query function to retrieve a Media item by its ID.
 pub fn get_media_by_id<R: MediaRepository>(
@@ -52,6 +53,32 @@ pub fn get_tags_by_relationship<R: TagRepository>(
         return Ok(None);
     }
     repo.get_tags_by_relationship(&normalized)
+}
+
+/// Query function returning the set of Media IDs tagged by every Tag ID passed (logical AND).
+pub fn get_media_ids_by_logical_and<R, I, T>(
+    tag_ids: I,
+    repo: &R,
+) -> Result<HashSet<MediaId>, R::Error>
+where
+    R: TagRepository,
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    let mut result: Option<HashSet<MediaId>> = None;
+    for tag_id in tag_ids {
+        let media_ids: HashSet<MediaId> = repo
+            .get_tag_adj_list(tag_id.as_ref())?
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, media_id)| MediaId::from_hash(media_id).ok())
+            .collect();
+        match &mut result {
+            None => result = Some(media_ids),
+            Some(existing) => existing.retain(|id| media_ids.contains(id)),
+        }
+    }
+    Ok(result.unwrap_or_default())
 }
 
 #[cfg(test)]

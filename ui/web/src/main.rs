@@ -24,38 +24,43 @@ fn main() -> Result<(), Box<dyn StdError>> {
     MediaRepository::init(&repo)?;
     TagRepository::init(&repo)?;
 
-    let upload_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
-    match cmd::create_media_from_file(upload_path, &repo)? {
-        Some(media) => {
-            println!("Created media: {:?}", media);
-            match cmd::add_tag_to_media(media.id.as_str(), "new tag", "new relationship", &repo) {
-                Ok(tag) => println!("Added tag: {:?}", tag),
-                Err(e) => println!("Add tag error: {}", e),
-            }
-            if let Some(fetched) = qry::get_media_by_id(&media.id, &repo)? {
-                println!("Retrieved media from DB: {:?}", fetched);
-            }
-        }
-        None => println!("Media already exists"),
-    }
+    let upload_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/data_trap.png");
+    let media = cmd::create_media_from_file(upload_path, &repo)
+        .unwrap()
+        .unwrap();
+    let tag1 =
+        cmd::add_tag_to_media(media.id.as_str(), "new tag", "new relationship", &repo).unwrap();
+    let to_do = &qry::get_relationships_by_prefix("to", Some(1), &repo)
+        .unwrap()
+        .unwrap()[0];
+    let tag0 = &qry::get_tags_by_relationship(to_do, &repo)
+        .unwrap()
+        .unwrap()[0];
+    let upload_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/exploits_of_a_mom.png");
+    let media2 = cmd::create_media_from_file(upload_path, &repo)
+        .unwrap()
+        .unwrap();
+    let tag2 =
+        cmd::add_tag_to_media(media2.id.as_str(), "bobby tables", "sql memes", &repo).unwrap();
 
-    match qry::get_relationships_by_prefix("new relationship", None, &repo)? {
-        Some(relationship) => {
-            println!("Found relationship: {:?}", relationship)
-        }
-        None => {
-            eprintln!("Failed to find relationship 'new relationship'")
-        }
-    }
+    let media_results = qry::get_media_ids_by_logical_and([tag0.id()], &repo).unwrap();
+    let media_id = media_results.iter().last().unwrap();
+    let final_result = qry::get_media_by_id(media_id, &repo);
+    println!("Result of 'needs tags': {:?}", final_result);
+    println!("---");
 
-    match qry::get_tags_by_relationship("new relationship", &repo)? {
-        Some(tags) => {
-            println!("Found tags for 'new relationship': {:?}", tags)
-        }
-        None => {
-            eprintln!("Failed to find tags for 'new relationship'")
-        }
-    }
+    let media_results = qry::get_media_ids_by_logical_and([tag0.id(), tag1.id()], &repo).unwrap();
+    let media_id = media_results.iter().last().unwrap();
+    let final_result = qry::get_media_by_id(media_id, &repo);
+    println!("Result of 'needs tags' & 'new tag': {:?}", final_result);
+    println!("---");
+
+    let media_results = qry::get_media_ids_by_logical_and([tag1.id(), tag2.id()], &repo).unwrap();
+    let media_id = media_results.iter().last();
+    // let final_result = qry::get_media_by_id(media_id, &repo);
+    println!("Result of 'needs tags' & 'bobby tables': {:?}", media_id);
 
     Ok(())
 }
