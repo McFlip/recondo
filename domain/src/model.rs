@@ -160,16 +160,16 @@ pub fn new_relationship(s: impl AsRef<str>) -> Result<String, RelationshipError>
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Edge {
-    label: String,
+    relationship: String,
     media: String,
     tag: String,
 }
 
 impl Edge {
-    pub fn new(label: String, media: String, tag: String) -> Result<Self, EdgeError> {
-        let label = normalize_relationship(label);
-        if label.is_empty() {
-            return Err(EdgeError::EmptyLabel);
+    pub fn new(relationship: String, media: String, tag: String) -> Result<Self, EdgeError> {
+        let relationship = normalize_relationship(relationship);
+        if relationship.is_empty() {
+            return Err(EdgeError::EmptyRelationship);
         }
         if media.is_empty() {
             return Err(EdgeError::EmptyMedia);
@@ -177,13 +177,13 @@ impl Edge {
         if tag.is_empty() {
             return Err(EdgeError::EmptyTag);
         }
-        Ok(Self { label, media, tag })
+        Ok(Self { relationship, media, tag })
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EdgeError {
-    EmptyLabel,
+    EmptyRelationship,
     EmptyMedia,
     EmptyTag,
 }
@@ -191,7 +191,7 @@ pub enum EdgeError {
 impl fmt::Display for EdgeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyLabel => write!(f, "label must not be empty"),
+            Self::EmptyRelationship => write!(f, "relationship must not be empty"),
             Self::EmptyMedia => write!(f, "media ID must not be empty"),
             Self::EmptyTag => write!(f, "tag ID must not be empty"),
         }
@@ -243,20 +243,20 @@ mod tests {
             "tag_id_1".to_string(),
         )
         .unwrap();
-        assert_eq!(edge.label, "liked");
+        assert_eq!(edge.relationship, "liked");
         assert_eq!(edge.media, "media_id_1");
         assert_eq!(edge.tag, "tag_id_1");
     }
 
     #[test]
-    fn test_edge_new_empty_label() {
+    fn test_edge_new_empty_relationship() {
         assert_eq!(
             Edge::new(
                 "".to_string(),
                 "media_id_1".to_string(),
                 "tag_id_1".to_string()
             ),
-            Err(EdgeError::EmptyLabel)
+            Err(EdgeError::EmptyRelationship)
         );
     }
 

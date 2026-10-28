@@ -27,7 +27,7 @@ pub trait TagRepository {
         &self,
         media_id: &str,
         tag: &Tag,
-        label: &str,
+        relationship: &str,
     ) -> Result<(), Self::Error>;
     fn get_tag_adj_list(
         &self,

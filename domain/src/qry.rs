@@ -218,7 +218,7 @@ mod tests {
             &self,
             _media_id: &str,
             _tag: &Tag,
-            _label: &str,
+            _relationship: &str,
         ) -> Result<(), Self::Error> {
             if self.should_fail {
                 return Err(MockError);

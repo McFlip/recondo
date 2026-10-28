@@ -377,18 +377,18 @@ impl TagRepository for RedbMediaRepository {
             .is_some())
     }
 
-    fn add_tag_edge(&self, media_id: &str, tag: &Tag, label: &str) -> Result<(), Self::Error> {
-        let label = normalize_relationship(label);
-        if label.is_empty() {
+    fn add_tag_edge(&self, media_id: &str, tag: &Tag, relationship: &str) -> Result<(), Self::Error> {
+        let relationship = normalize_relationship(relationship);
+        if relationship.is_empty() {
             return Err(AddTagEdgeError::repository(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "label must not be empty",
+                "relationship must not be empty",
             )));
         }
         let tag_id = tag.id();
         let write_txn = self.db.begin_write().map_err(AddTagEdgeError::repository)?;
         {
-            let media_edge = (label.clone(), tag_id.to_string());
+            let media_edge = (relationship.clone(), tag_id.to_string());
             let mut media_table = write_txn
                 .open_table(MEDIA_ADJ_LST)
                 .map_err(AddTagEdgeError::repository)?;
@@ -405,7 +405,7 @@ impl TagRepository for RedbMediaRepository {
                     .map_err(AddTagEdgeError::repository)?;
             }
 
-            let tag_edge = (label.clone(), media_id.to_string());
+            let tag_edge = (relationship.clone(), media_id.to_string());
             let mut tag_table = write_txn
                 .open_table(TAG_ADJ_LST)
                 .map_err(AddTagEdgeError::repository)?;
@@ -429,7 +429,7 @@ impl TagRepository for RedbMediaRepository {
                 .insert(tag_id, tag.name())
                 .map_err(AddTagEdgeError::repository)?;
 
-            upsert_relationship_tag_txn(&write_txn, &label, tag_id)
+            upsert_relationship_tag_txn(&write_txn, &relationship, tag_id)
                 .map_err(AddTagEdgeError::repository)?;
         }
         write_txn.commit().map_err(AddTagEdgeError::repository)?;

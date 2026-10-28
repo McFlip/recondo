@@ -80,7 +80,7 @@ pub fn create_media_from_file<R: MediaRepository>(
 #[derive(Debug)]
 pub enum AddTagError<E> {
     EmptyMediaId,
-    EmptyLabel,
+    EmptyRelationship,
     Tag(model::TagError),
     Repository(E),
 }
@@ -89,7 +89,7 @@ impl<E: fmt::Display> fmt::Display for AddTagError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyMediaId => write!(f, "media id must not be empty"),
-            Self::EmptyLabel => write!(f, "label must not be empty"),
+            Self::EmptyRelationship => write!(f, "relationship must not be empty"),
             Self::Tag(e) => write!(f, "tag error: {}", e),
             Self::Repository(e) => write!(f, "repository error: {}", e),
         }
@@ -100,7 +100,7 @@ impl<E: StdError + 'static> StdError for AddTagError<E> {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             Self::EmptyMediaId => None,
-            Self::EmptyLabel => None,
+            Self::EmptyRelationship => None,
             Self::Tag(e) => Some(e),
             Self::Repository(e) => Some(e),
         }
@@ -110,17 +110,17 @@ impl<E: StdError + 'static> StdError for AddTagError<E> {
 pub fn add_tag_to_media<R: TagRepository>(
     media_id: &str,
     tag_name: &str,
-    label: &str,
+    relationship: &str,
     repo: &R,
 ) -> Result<model::Tag, AddTagError<R::Error>> {
     if media_id.is_empty() {
         return Err(AddTagError::EmptyMediaId);
     }
-    if label.is_empty() {
-        return Err(AddTagError::EmptyLabel);
+    if relationship.is_empty() {
+        return Err(AddTagError::EmptyRelationship);
     }
     let tag = model::Tag::new(tag_name).map_err(AddTagError::Tag)?;
-    repo.add_tag_edge(media_id, &tag, label)
+    repo.add_tag_edge(media_id, &tag, relationship)
         .map_err(AddTagError::Repository)?;
     Ok(tag)
 }
@@ -240,7 +240,7 @@ mod tests {
             &self,
             _media_id: &str,
             _tag: &model::Tag,
-            _label: &str,
+            _relationship: &str,
         ) -> Result<(), Self::Error> {
             if self.error.is_some() {
                 Err(StubError)
@@ -370,10 +370,10 @@ mod tests {
     }
 
     #[test]
-    fn test_add_tag_to_media_empty_label() {
+    fn test_add_tag_to_media_empty_relationship() {
         let repo = StubRepo::new(&[]);
         let result = add_tag_to_media("media1", "landscape", "", &repo);
-        assert!(matches!(result, Err(AddTagError::EmptyLabel)));
+        assert!(matches!(result, Err(AddTagError::EmptyRelationship)));
     }
 
     #[test]
