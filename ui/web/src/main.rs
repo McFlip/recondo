@@ -54,13 +54,41 @@ fn main() -> Result<(), Box<dyn StdError>> {
     let media_results = qry::get_media_ids_by_logical_and([tag0.id(), tag1.id()], &repo).unwrap();
     let media_id = media_results.iter().last().unwrap();
     let final_result = qry::get_media_by_id(media_id, &repo);
-    println!("Result of 'needs tags' & 'new tag': {:?}", final_result);
+    println!("Result of 'needs tags' && 'new tag': {:?}", final_result);
     println!("---");
 
     let media_results = qry::get_media_ids_by_logical_and([tag1.id(), tag2.id()], &repo).unwrap();
     let media_id = media_results.iter().last();
-    // let final_result = qry::get_media_by_id(media_id, &repo);
-    println!("Result of 'needs tags' & 'bobby tables': {:?}", media_id);
+    println!("Result of 'needs tags' && 'bobby tables': {:?}", media_id);
+    println!("---");
+
+    let media_results = qry::get_media_ids_by_logical_or([tag1.id(), tag2.id()], &repo).unwrap();
+    let media_id = media_results;
+    println!("Result of 'needs tags' || 'bobby tables': {:?}", media_id);
+    println!("---");
+
+    let media_results = qry::get_media_ids_by_logical_or_then_and(
+        [[tag1.id(), tag2.id()], [tag0.id(), tag0.id()]],
+        &repo,
+    )
+    .unwrap();
+    let media_id = media_results;
+    println!(
+        "Result of ('new tag' || 'bobby tables') && 'needs tags': {:?}",
+        media_id
+    );
+    println!("---");
+
+    let media_results = qry::get_media_ids_by_logical_and_then_or(
+        [[tag1.id(), tag2.id()], [tag0.id(), tag0.id()]],
+        &repo,
+    )
+    .unwrap();
+    let media_id = media_results;
+    println!(
+        "Result of ('new tag' && 'bobby tables') || 'needs tags': {:?}",
+        media_id
+    );
 
     Ok(())
 }

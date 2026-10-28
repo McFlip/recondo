@@ -81,6 +81,72 @@ where
     Ok(result.unwrap_or_default())
 }
 
+/// Query function returning the set of Media IDs tagged by any Tag ID passed (logical OR).
+pub fn get_media_ids_by_logical_or<R, I, T>(
+    tag_ids: I,
+    repo: &R,
+) -> Result<HashSet<MediaId>, R::Error>
+where
+    R: TagRepository,
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    let mut result: HashSet<MediaId> = HashSet::new();
+    for tag_id in tag_ids {
+        let media_ids: HashSet<MediaId> = repo
+            .get_tag_adj_list(tag_id.as_ref())?
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(_, media_id)| MediaId::from_hash(media_id).ok())
+            .collect();
+        result.extend(media_ids);
+    }
+    Ok(result)
+}
+
+/// Query function applying 2-level logic: logical AND within each inner group of Tag IDs,
+/// then logical OR across groups.
+pub fn get_media_ids_by_logical_and_then_or<R, I, J, T>(
+    groups: I,
+    repo: &R,
+) -> Result<HashSet<MediaId>, R::Error>
+where
+    R: TagRepository,
+    I: IntoIterator<Item = J>,
+    J: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    let mut result: HashSet<MediaId> = HashSet::new();
+    for group in groups {
+        let and_set = get_media_ids_by_logical_and(group, repo)?;
+        result.extend(and_set);
+    }
+    Ok(result)
+}
+
+/// Query function applying 2-level logic: logical OR within each inner group of Tag IDs,
+/// then logical AND across groups.
+pub fn get_media_ids_by_logical_or_then_and<R, I, J, T>(
+    groups: I,
+    repo: &R,
+) -> Result<HashSet<MediaId>, R::Error>
+where
+    R: TagRepository,
+    I: IntoIterator<Item = J>,
+    J: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    let mut result: Option<HashSet<MediaId>> = None;
+    for group in groups {
+        let or_set = get_media_ids_by_logical_or(group, repo)?;
+        match &mut result {
+            None => result = Some(or_set),
+            Some(existing) => existing.retain(|id| or_set.contains(id)),
+        }
+    }
+    Ok(result.unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
