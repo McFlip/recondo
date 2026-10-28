@@ -1,4 +1,4 @@
-use recondo_domain::model::{normalize_relationship, Media, MediaId, Tag};
+use recondo_domain::model::{Media, MediaId, Tag, normalize_relationship};
 use recondo_domain::repository::{MediaRepository, SaveMediaError, TagRepository};
 use redb::{Database, Error, ReadableDatabase, ReadableTable, TableDefinition};
 use std::fs;
@@ -89,10 +89,7 @@ pub fn get_media_by_id(db: &Database, id: &MediaId) -> Result<Option<Media>, Err
     Ok(Some(media))
 }
 
-pub fn get_media_adj_list(
-    db: &Database,
-    id: &MediaId,
-) -> Result<Option<Vec<EdgeFrmMedia>>, Error> {
+pub fn get_media_adj_list(db: &Database, id: &MediaId) -> Result<Option<Vec<EdgeFrmMedia>>, Error> {
     let read_txn = db.begin_read()?;
     let table = read_txn.open_table(MEDIA_ADJ_LST)?;
     let Some(value) = table.get(id.as_str())? else {
@@ -108,6 +105,36 @@ pub fn get_tag_adj_list(db: &Database, tag_id: &str) -> Result<Option<Vec<EdgeFr
         return Ok(None);
     };
     Ok(Some(value.value()))
+}
+
+pub fn get_relationships_by_prefix(
+    db: &Database,
+    prefix: &str,
+    limit: Option<usize>,
+) -> Result<Option<Vec<String>>, Error> {
+    if limit == Some(0) {
+        return Ok(None);
+    }
+    let read_txn = db.begin_read()?;
+    let table = read_txn.open_table(RELATIONSHIP_TO_TAGS)?;
+    let mut matches = Vec::new();
+    for entry in table.range(prefix..)? {
+        let (key, _) = entry?;
+        let key_str = key.value();
+        if key_str.starts_with(prefix) {
+            matches.push(key_str.to_string());
+            if limit.is_some_and(|lim| matches.len() >= lim) {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    if matches.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(matches))
+    }
 }
 
 #[derive(Debug)]
@@ -168,13 +195,6 @@ pub fn upsert_relationship_tag_txn(
     Ok(())
 }
 
-pub fn upsert_relationship_tag(db: &Database, relationship: &str, tag_id: &str) -> Result<(), RelationshipSetError> {
-    let write_txn = db.begin_write().map_err(RelationshipSetError::repository)?;
-    upsert_relationship_tag_txn(&write_txn, relationship, tag_id)?;
-    write_txn.commit().map_err(RelationshipSetError::repository)?;
-    Ok(())
-}
-
 pub struct RedbMediaRepository {
     db: Database,
 }
@@ -227,8 +247,7 @@ impl MediaRepository for RedbMediaRepository {
             .begin_write()
             .map_err(|e| SaveMediaError::Repository(e.into()))?;
         {
-            insert_media_record_txn(&write_txn, media)
-                .map_err(SaveMediaError::Repository)?;
+            insert_media_record_txn(&write_txn, media).map_err(SaveMediaError::Repository)?;
 
             let tag = Tag::new("needs tags").map_err(|e| SaveMediaError::Tag(Box::new(e)))?;
             let relationship = normalize_relationship("to do");
@@ -267,15 +286,17 @@ impl MediaRepository for RedbMediaRepository {
                     .map_err(|e| SaveMediaError::Repository(e.into()))?;
             }
 
-            upsert_relationship_tag_txn(&write_txn, &relationship, tag.id()).map_err(|e| match e {
-                RelationshipSetError::EmptyRelationship => {
-                    SaveMediaError::Tag(Box::new(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "relationship must not be empty",
-                    )))
-                }
-                RelationshipSetError::Repository(err) => SaveMediaError::Repository(err),
-            })?;
+            upsert_relationship_tag_txn(&write_txn, &relationship, tag.id()).map_err(
+                |e| match e {
+                    RelationshipSetError::EmptyRelationship => {
+                        SaveMediaError::Tag(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "relationship must not be empty",
+                        )))
+                    }
+                    RelationshipSetError::Repository(err) => SaveMediaError::Repository(err),
+                },
+            )?;
         }
         write_txn.commit().map_err(|e| {
             let _ = fs::remove_file(dest_path);
@@ -369,23 +390,16 @@ impl TagRepository for RedbMediaRepository {
         Ok(())
     }
 
-    fn get_tag_adj_list(
-        &self,
-        tag_id: &str,
-    ) -> Result<Option<Vec<(String, String)>>, Self::Error> {
+    fn get_tag_adj_list(&self, tag_id: &str) -> Result<Option<Vec<(String, String)>>, Self::Error> {
         get_tag_adj_list(&self.db, tag_id).map_err(AddTagEdgeError::repository)
     }
 
-    fn add_tag_to_relationship(&self, relationship: &str, tag_id: &str) -> Result<(), Self::Error> {
-        upsert_relationship_tag(&self.db, relationship, tag_id).map_err(|e| match e {
-            RelationshipSetError::EmptyRelationship => {
-                AddTagEdgeError::repository(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "relationship must not be empty",
-                ))
-            }
-            RelationshipSetError::Repository(err) => AddTagEdgeError::repository(err),
-        })
+    fn get_relationships_by_prefix(
+        &self,
+        prefix: &str,
+        limit: Option<usize>,
+    ) -> Result<Option<Vec<String>>, Self::Error> {
+        get_relationships_by_prefix(&self.db, prefix, limit).map_err(AddTagEdgeError::repository)
     }
 }
 
@@ -643,10 +657,7 @@ mod tests {
 
         // Check Media adj list
         let media_adj = repo.get_media_adj_list(&media.id).unwrap();
-        assert_eq!(
-            media_adj,
-            Some(vec![("to do".to_string(), tag_id.clone())])
-        );
+        assert_eq!(media_adj, Some(vec![("to do".to_string(), tag_id.clone())]));
 
         // Check Tag adj list
         let tag_adj = repo.get_tag_adj_list(&tag_id).unwrap();
@@ -739,7 +750,10 @@ mod tests {
         assert_eq!(liked.value(), vec![tag.id().to_string()]);
 
         let todo = rel_table.get("to do").unwrap().unwrap();
-        assert_eq!(todo.value(), vec![Tag::new("needs tags").unwrap().id().to_string()]);
+        assert_eq!(
+            todo.value(),
+            vec![Tag::new("needs tags").unwrap().id().to_string()]
+        );
 
         let _ = fs::remove_dir_all(&base);
     }
@@ -766,6 +780,58 @@ mod tests {
         let err = upsert_relationship_tag_txn(&write_txn, "   ", "tag3").unwrap_err();
         assert!(matches!(err, RelationshipSetError::EmptyRelationship));
         write_txn.abort().unwrap();
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_get_relationships_by_prefix() {
+        let base = temp_base("relationships_prefix");
+        let src = base.join("src.txt");
+        let dest = base.join("assets").join("hash123.txt");
+        fs::write(&src, b"test").unwrap();
+
+        let db_path = base.join("test.redb");
+        let db = Database::create(&db_path).unwrap();
+        init_db(&db).unwrap();
+        let repo = RedbMediaRepository::new(db);
+
+        let media = make_test_media("hash123");
+        repo.save_media(&media, &src, &dest).unwrap();
+
+        let tag1 = Tag::new("tag1").unwrap();
+        let tag2 = Tag::new("tag2").unwrap();
+        let tag3 = Tag::new("tag3").unwrap();
+
+        repo.add_tag_edge("hash123", tag1.id(), "total recall")
+            .unwrap();
+        repo.add_tag_edge("hash123", tag2.id(), "topic").unwrap();
+        repo.add_tag_edge("hash123", tag3.id(), "other").unwrap();
+        // Note: save_media automatically creates a "to do" edge with tag "needs tags"
+
+        let matches = repo
+            .get_relationships_by_prefix("to", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(matches, vec!["to do", "topic", "total recall"]);
+
+        let matches_limited = repo
+            .get_relationships_by_prefix("to", Some(2))
+            .unwrap()
+            .unwrap();
+        assert_eq!(matches_limited, vec!["to do", "topic"]);
+
+        let matches_zero = repo.get_relationships_by_prefix("to", Some(0)).unwrap();
+        assert_eq!(matches_zero, None);
+
+        let matches_total = repo
+            .get_relationships_by_prefix("tot", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(matches_total, vec!["total recall"]);
+
+        let no_matches = repo.get_relationships_by_prefix("zeta", None).unwrap();
+        assert_eq!(no_matches, None);
 
         let _ = fs::remove_dir_all(&base);
     }

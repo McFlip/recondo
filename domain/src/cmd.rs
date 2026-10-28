@@ -260,11 +260,15 @@ mod tests {
             }
         }
 
-        fn add_tag_to_relationship(&self, _relationship: &str, _tag_id: &str) -> Result<(), Self::Error> {
+        fn get_relationships_by_prefix(
+            &self,
+            _prefix: &str,
+            _limit: Option<usize>,
+        ) -> Result<Option<Vec<String>>, Self::Error> {
             if self.error.is_some() {
                 Err(StubError)
             } else {
-                Ok(())
+                Ok(None)
             }
         }
     }

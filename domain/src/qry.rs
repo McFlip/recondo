@@ -1,4 +1,4 @@
-use crate::model::{Media, MediaId};
+use crate::model::{normalize_relationship, Media, MediaId};
 use crate::repository::{MediaRepository, TagRepository};
 
 /// Query function to retrieve a Media item by its ID.
@@ -23,6 +23,23 @@ pub fn get_tag_adj_list<R: TagRepository>(
     repo: &R,
 ) -> Result<Option<Vec<(String, String)>>, R::Error> {
     repo.get_tag_adj_list(tag_id)
+}
+
+/// Query function to retrieve relationship keys starting with the given prefix.
+/// Keep in mind that relationships are normalized.
+pub fn get_relationships_by_prefix<R: TagRepository>(
+    prefix: &str,
+    limit: Option<usize>,
+    repo: &R,
+) -> Result<Option<Vec<String>>, R::Error> {
+    if limit == Some(0) {
+        return Ok(None);
+    }
+    let normalized = normalize_relationship(prefix);
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    repo.get_relationships_by_prefix(&normalized, limit)
 }
 
 #[cfg(test)]
@@ -136,6 +153,7 @@ mod tests {
 
     struct MockTagRepo {
         tags: HashMap<String, Vec<(String, String)>>,
+        relationships: Vec<String>,
         should_fail: bool,
     }
 
@@ -143,6 +161,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 tags: HashMap::new(),
+                relationships: Vec::new(),
                 should_fail: false,
             }
         }
@@ -152,9 +171,15 @@ mod tests {
             self
         }
 
+        fn with_relationships(mut self, rels: Vec<&str>) -> Self {
+            self.relationships = rels.into_iter().map(normalize_relationship).collect();
+            self
+        }
+
         fn failing() -> Self {
             Self {
                 tags: HashMap::new(),
+                relationships: Vec::new(),
                 should_fail: true,
             }
         }
@@ -196,11 +221,31 @@ mod tests {
             Ok(self.tags.get(tag_id).cloned())
         }
 
-        fn add_tag_to_relationship(&self, _relationship: &str, _tag_id: &str) -> Result<(), Self::Error> {
+        fn get_relationships_by_prefix(
+            &self,
+            prefix: &str,
+            limit: Option<usize>,
+        ) -> Result<Option<Vec<String>>, Self::Error> {
             if self.should_fail {
                 return Err(MockError);
             }
-            Ok(())
+            if limit == Some(0) {
+                return Ok(None);
+            }
+            let iter = self
+                .relationships
+                .iter()
+                .filter(|r| r.starts_with(prefix))
+                .cloned();
+            let matches: Vec<String> = match limit {
+                Some(lim) => iter.take(lim).collect(),
+                None => iter.collect(),
+            };
+            if matches.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(matches))
+            }
         }
     }
 
@@ -304,6 +349,59 @@ mod tests {
         let repo = MockTagRepo::failing();
 
         let result = get_tag_adj_list("tag123", &repo);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_relationships_by_prefix_found() {
+        let repo = MockTagRepo::new()
+            .with_relationships(vec!["to do", "total recall", "unique"]);
+
+        let result = get_relationships_by_prefix("to", None, &repo).unwrap();
+        assert_eq!(result, Some(vec!["to do".to_string(), "total recall".to_string()]));
+    }
+
+    #[test]
+    fn test_get_relationships_by_prefix_with_limit() {
+        let repo = MockTagRepo::new()
+            .with_relationships(vec!["to do", "total recall", "to another"]);
+
+        let result = get_relationships_by_prefix("to", Some(2), &repo).unwrap();
+        assert_eq!(result, Some(vec!["to do".to_string(), "total recall".to_string()]));
+
+        let result_zero = get_relationships_by_prefix("to", Some(0), &repo).unwrap();
+        assert_eq!(result_zero, None);
+    }
+
+    #[test]
+    fn test_get_relationships_by_prefix_normalizes_search() {
+        let repo = MockTagRepo::new().with_relationships(vec!["  TO DO  ", "liked"]);
+
+        let result = get_relationships_by_prefix("  TO  ", None, &repo).unwrap();
+        assert_eq!(result, Some(vec!["to do".to_string()]));
+    }
+
+    #[test]
+    fn test_get_relationships_by_prefix_empty_or_whitespace() {
+        let repo = MockTagRepo::new().with_relationships(vec!["to do"]);
+
+        assert_eq!(get_relationships_by_prefix("", None, &repo).unwrap(), None);
+        assert_eq!(get_relationships_by_prefix("   ", None, &repo).unwrap(), None);
+    }
+
+    #[test]
+    fn test_get_relationships_by_prefix_not_found() {
+        let repo = MockTagRepo::new().with_relationships(vec!["to do"]);
+
+        let result = get_relationships_by_prefix("nomatch", None, &repo).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_get_relationships_by_prefix_error() {
+        let repo = MockTagRepo::failing();
+
+        let result = get_relationships_by_prefix("to", None, &repo);
         assert!(result.is_err());
     }
 }
