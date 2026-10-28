@@ -390,6 +390,79 @@ mod tests {
         }
     }
 
+    fn logical_query_repo() -> MockTagRepo {
+        MockTagRepo::new()
+            .with_adj_list(
+                "tag_a",
+                vec![
+                    ("rel".into(), "media_1".into()),
+                    ("rel".into(), "media_2".into()),
+                ],
+            )
+            .with_adj_list(
+                "tag_b",
+                vec![
+                    ("rel".into(), "media_2".into()),
+                    ("rel".into(), "media_3".into()),
+                ],
+            )
+            .with_adj_list(
+                "tag_c",
+                vec![
+                    ("rel".into(), "media_3".into()),
+                    ("rel".into(), "media_4".into()),
+                ],
+            )
+    }
+
+    fn media_ids(ids: &[&str]) -> HashSet<MediaId> {
+        ids.iter()
+            .map(|id| MediaId::from_hash(*id).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn test_get_media_ids_by_logical_and() {
+        let repo = logical_query_repo();
+
+        let result = get_media_ids_by_logical_and(["tag_a", "tag_b"], &repo).unwrap();
+
+        assert_eq!(result, media_ids(&["media_2"]));
+    }
+
+    #[test]
+    fn test_get_media_ids_by_logical_or() {
+        let repo = logical_query_repo();
+
+        let result = get_media_ids_by_logical_or(["tag_a", "tag_b"], &repo).unwrap();
+
+        assert_eq!(result, media_ids(&["media_1", "media_2", "media_3"]));
+    }
+
+    #[test]
+    fn test_get_media_ids_by_logical_and_then_or() {
+        let repo = logical_query_repo();
+
+        let result = get_media_ids_by_logical_and_then_or(
+            vec![vec!["tag_a", "tag_b"], vec!["tag_c"]],
+            &repo,
+        )
+        .unwrap();
+
+        assert_eq!(result, media_ids(&["media_2", "media_3", "media_4"]));
+    }
+
+    #[test]
+    fn test_get_media_ids_by_logical_or_then_and() {
+        let repo = logical_query_repo();
+
+        let result =
+            get_media_ids_by_logical_or_then_and([["tag_a", "tag_b"], ["tag_b", "tag_c"]], &repo)
+                .unwrap();
+
+        assert_eq!(result, media_ids(&["media_2", "media_3"]));
+    }
+
     #[test]
     fn test_get_media_by_id_found() {
         let id = MediaId::from_hash("abcd1234ef").unwrap();
