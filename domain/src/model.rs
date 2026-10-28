@@ -8,6 +8,8 @@ use url::Url;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MediaId(String);
 
+pub type TagId = String;
+
 impl MediaId {
     pub fn from_hash(s: impl Into<String>) -> Result<Self, MediaIdError> {
         let s = s.into();

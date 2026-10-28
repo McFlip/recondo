@@ -1,4 +1,4 @@
-use crate::model::{Media, MediaId, Tag, normalize_relationship};
+use crate::model::{Media, MediaId, Tag, TagId, normalize_relationship};
 use crate::repository::{MediaRepository, TagRepository};
 use std::collections::HashSet;
 
@@ -16,6 +16,26 @@ pub fn get_media_adj_list<R: MediaRepository>(
     repo: &R,
 ) -> Result<Option<Vec<(String, String)>>, R::Error> {
     repo.get_media_adj_list(id)
+}
+
+/// Removes Media IDs whose adjacency list contains any of the supplied Tag IDs.
+pub fn filter_out_tags<R: MediaRepository>(
+    media_ids: HashSet<MediaId>,
+    tag_ids: HashSet<TagId>,
+    repo: &R,
+) -> Result<Vec<MediaId>, R::Error> {
+    let mut result = Vec::new();
+    for media_id in media_ids {
+        let adj_list = repo.get_media_adj_list(&media_id)?;
+        let has_tag = adj_list
+            .unwrap_or_default()
+            .iter()
+            .any(|(_, tag_id)| tag_ids.contains(tag_id));
+        if !has_tag {
+            result.push(media_id);
+        }
+    }
+    Ok(result)
 }
 
 /// Query function to retrieve the adjacency list of a Tag by its ID.
@@ -443,6 +463,37 @@ mod tests {
 
         let result = get_media_adj_list(&id, &repo);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_filter_out_tags() {
+        let tagged_id = MediaId::from_hash("tagged").unwrap();
+        let untagged_id = MediaId::from_hash("untagged").unwrap();
+        let missing_adj_list_id = MediaId::from_hash("missing").unwrap();
+        let media_ids = HashSet::from([
+            tagged_id.clone(),
+            untagged_id.clone(),
+            missing_adj_list_id.clone(),
+        ]);
+        let tag_ids = HashSet::from(["tag_a".to_string(), "tag_b".to_string()]);
+        let repo = MockMediaRepo::new()
+            .with_adj_list("tagged", vec![("relationship".into(), "tag_b".into())])
+            .with_adj_list("untagged", vec![("relationship".into(), "tag_c".into())]);
+
+        let result = filter_out_tags(media_ids, tag_ids, &repo).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.contains(&untagged_id));
+        assert!(result.contains(&missing_adj_list_id));
+        assert!(!result.contains(&tagged_id));
+    }
+
+    #[test]
+    fn test_filter_out_tags_error() {
+        let media_ids = HashSet::from([MediaId::from_hash("media123").unwrap()]);
+        let repo = MockMediaRepo::failing();
+
+        assert!(filter_out_tags(media_ids, HashSet::new(), &repo).is_err());
     }
 
     #[test]

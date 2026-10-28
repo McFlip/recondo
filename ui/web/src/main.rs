@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::error::Error as StdError;
 use std::fs;
 use std::path::PathBuf;
@@ -87,6 +88,20 @@ fn main() -> Result<(), Box<dyn StdError>> {
     let media_id = media_results;
     println!(
         "Result of ('new tag' && 'bobby tables') || 'needs tags': {:?}",
+        media_id
+    );
+    println!("---");
+
+    let media_results = qry::get_media_ids_by_logical_and_then_or(
+        [[tag1.id(), tag2.id()], [tag0.id(), tag0.id()]],
+        &repo,
+    )
+    .unwrap();
+    let mut not = HashSet::new();
+    not.insert(tag0.id().into());
+    let media_id = qry::filter_out_tags(media_results, not, &repo).unwrap();
+    println!(
+        "Result of ('new tag' && 'bobby tables') || 'needs tags' && !'needs tags': {:?}",
         media_id
     );
 
