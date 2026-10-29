@@ -70,4 +70,3 @@ impl<E: std::error::Error + 'static> std::error::Error for SaveMediaError<E> {
         }
     }
 }
-

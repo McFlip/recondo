@@ -1,6 +1,69 @@
 use crate::model::{Media, MediaId, Tag, TagId, normalize_relationship};
 use crate::repository::{MediaRepository, TagRepository};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CountedTag {
+    pub tag: Tag,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelationshipTagGroup {
+    pub relationship: String,
+    pub tags: Vec<CountedTag>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaQueryItems {
+    Count(usize),
+    Items(Vec<Media>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaQueryResult {
+    pub relationships: Vec<RelationshipTagGroup>,
+    pub media: MediaQueryItems,
+}
+
+#[derive(Debug)]
+pub enum EnrichedQueryError<MediaError, TagError> {
+    MediaRepository(MediaError),
+    TagRepository(TagError),
+    MissingTag { relationship: String, tag_id: TagId },
+}
+
+impl<MediaError: std::fmt::Display, TagError: std::fmt::Display> std::fmt::Display
+    for EnrichedQueryError<MediaError, TagError>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MediaRepository(error) => write!(f, "media repository error: {error}"),
+            Self::TagRepository(error) => write!(f, "tag repository error: {error}"),
+            Self::MissingTag {
+                relationship,
+                tag_id,
+            } => write!(
+                f,
+                "tag {tag_id} for relationship {relationship} was not found"
+            ),
+        }
+    }
+}
+
+impl<MediaError, TagError> std::error::Error for EnrichedQueryError<MediaError, TagError>
+where
+    MediaError: std::error::Error + 'static,
+    TagError: std::error::Error + 'static,
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::MediaRepository(error) => Some(error),
+            Self::TagRepository(error) => Some(error),
+            Self::MissingTag { .. } => None,
+        }
+    }
+}
 
 /// Query function to retrieve a Media item by its ID.
 pub fn get_media_by_id<R: MediaRepository>(
@@ -167,6 +230,219 @@ where
     Ok(result.unwrap_or_default())
 }
 
+fn get_relationship_tags<R>(
+    edge_counts: HashMap<(String, TagId), usize>,
+    repo: &R,
+) -> Result<
+    Vec<RelationshipTagGroup>,
+    EnrichedQueryError<<R as MediaRepository>::Error, <R as TagRepository>::Error>,
+>
+where
+    R: MediaRepository + TagRepository,
+{
+    let mut by_relationship: BTreeMap<String, Vec<(TagId, usize)>> = BTreeMap::new();
+    for ((relationship, tag_id), count) in edge_counts {
+        by_relationship
+            .entry(relationship)
+            .or_default()
+            .push((tag_id, count));
+    }
+
+    let mut groups = Vec::with_capacity(by_relationship.len());
+    for (relationship, tag_counts) in by_relationship {
+        let tags = repo
+            .get_tags_by_relationship(&relationship)
+            .map_err(EnrichedQueryError::TagRepository)?
+            .unwrap_or_default();
+        let mut tags_by_id: HashMap<String, Tag> = tags
+            .into_iter()
+            .map(|tag| (tag.id().to_string(), tag))
+            .collect();
+        let mut counted_tags = Vec::with_capacity(tag_counts.len());
+        for (tag_id, count) in tag_counts {
+            let tag = tags_by_id
+                .remove(&tag_id)
+                .ok_or_else(|| EnrichedQueryError::MissingTag {
+                    relationship: relationship.clone(),
+                    tag_id: tag_id.clone(),
+                })?;
+            counted_tags.push(CountedTag { tag, count });
+        }
+        counted_tags.sort_by(|left, right| {
+            left.count
+                .cmp(&right.count)
+                .then_with(|| left.tag.name().cmp(right.tag.name()))
+                .then_with(|| left.tag.id().cmp(right.tag.id()))
+        });
+        groups.push(RelationshipTagGroup {
+            relationship,
+            tags: counted_tags,
+        });
+    }
+    Ok(groups)
+}
+
+fn build_media_query_result<R>(
+    media_ids: HashSet<MediaId>,
+    search_tag_ids: HashSet<TagId>,
+    limit: usize,
+    repo: &R,
+) -> Result<
+    MediaQueryResult,
+    EnrichedQueryError<<R as MediaRepository>::Error, <R as TagRepository>::Error>,
+>
+where
+    R: MediaRepository + TagRepository,
+{
+    let mut edge_counts: HashMap<(String, TagId), usize> = HashMap::new();
+    for media_id in &media_ids {
+        for (relationship, tag_id) in repo
+            .get_media_adj_list(media_id)
+            .map_err(EnrichedQueryError::MediaRepository)?
+            .unwrap_or_default()
+        {
+            if !search_tag_ids.contains(&tag_id) {
+                *edge_counts.entry((relationship, tag_id)).or_default() += 1;
+            }
+        }
+    }
+
+    let relationships = get_relationship_tags(edge_counts, repo)?;
+    let media = if media_ids.len() < limit {
+        let mut ids: Vec<MediaId> = media_ids.into_iter().collect();
+        ids.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        let mut items = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(media) = repo
+                .get_media(&id)
+                .map_err(EnrichedQueryError::MediaRepository)?
+            {
+                items.push(media);
+            }
+        }
+        MediaQueryItems::Items(items)
+    } else {
+        MediaQueryItems::Count(media_ids.len())
+    };
+
+    Ok(MediaQueryResult {
+        relationships,
+        media,
+    })
+}
+
+/// Query Media and related Tag counts for Media IDs matching logical AND.
+pub fn get_enriched_media_by_logical_and<R, I, T>(
+    tag_ids: I,
+    limit: usize,
+    repo: &R,
+) -> Result<
+    MediaQueryResult,
+    EnrichedQueryError<<R as MediaRepository>::Error, <R as TagRepository>::Error>,
+>
+where
+    R: MediaRepository + TagRepository,
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    let tag_ids: Vec<String> = tag_ids
+        .into_iter()
+        .map(|tag_id| tag_id.as_ref().to_string())
+        .collect();
+    let media_ids = get_media_ids_by_logical_and(tag_ids.iter().map(String::as_str), repo)
+        .map_err(EnrichedQueryError::TagRepository)?;
+    build_media_query_result(media_ids, tag_ids.into_iter().collect(), limit, repo)
+}
+
+/// Query Media and related Tag counts for Media IDs matching logical OR.
+pub fn get_enriched_media_by_logical_or<R, I, T>(
+    tag_ids: I,
+    limit: usize,
+    repo: &R,
+) -> Result<
+    MediaQueryResult,
+    EnrichedQueryError<<R as MediaRepository>::Error, <R as TagRepository>::Error>,
+>
+where
+    R: MediaRepository + TagRepository,
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    let tag_ids: Vec<String> = tag_ids
+        .into_iter()
+        .map(|tag_id| tag_id.as_ref().to_string())
+        .collect();
+    let media_ids = get_media_ids_by_logical_or(tag_ids.iter().map(String::as_str), repo)
+        .map_err(EnrichedQueryError::TagRepository)?;
+    build_media_query_result(media_ids, tag_ids.into_iter().collect(), limit, repo)
+}
+
+/// Query Media and related Tag counts for AND-within-group, OR-across-groups matching.
+pub fn get_enriched_media_by_logical_and_then_or<R, I, J, T>(
+    groups: I,
+    limit: usize,
+    repo: &R,
+) -> Result<
+    MediaQueryResult,
+    EnrichedQueryError<<R as MediaRepository>::Error, <R as TagRepository>::Error>,
+>
+where
+    R: MediaRepository + TagRepository,
+    I: IntoIterator<Item = J>,
+    J: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    let groups: Vec<Vec<String>> = groups
+        .into_iter()
+        .map(|group| {
+            group
+                .into_iter()
+                .map(|tag_id| tag_id.as_ref().to_string())
+                .collect()
+        })
+        .collect();
+    let media_ids = get_media_ids_by_logical_and_then_or(
+        groups.iter().map(|group| group.iter().map(String::as_str)),
+        repo,
+    )
+    .map_err(EnrichedQueryError::TagRepository)?;
+    let search_tag_ids = groups.into_iter().flatten().collect();
+    build_media_query_result(media_ids, search_tag_ids, limit, repo)
+}
+
+/// Query Media and related Tag counts for OR-within-group, AND-across-groups matching.
+pub fn get_enriched_media_by_logical_or_then_and<R, I, J, T>(
+    groups: I,
+    limit: usize,
+    repo: &R,
+) -> Result<
+    MediaQueryResult,
+    EnrichedQueryError<<R as MediaRepository>::Error, <R as TagRepository>::Error>,
+>
+where
+    R: MediaRepository + TagRepository,
+    I: IntoIterator<Item = J>,
+    J: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    let groups: Vec<Vec<String>> = groups
+        .into_iter()
+        .map(|group| {
+            group
+                .into_iter()
+                .map(|tag_id| tag_id.as_ref().to_string())
+                .collect()
+        })
+        .collect();
+    let media_ids = get_media_ids_by_logical_or_then_and(
+        groups.iter().map(|group| group.iter().map(String::as_str)),
+        repo,
+    )
+    .map_err(EnrichedQueryError::TagRepository)?;
+    let search_tag_ids = groups.into_iter().flatten().collect();
+    build_media_query_result(media_ids, search_tag_ids, limit, repo)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,7 +468,10 @@ mod tests {
     struct MockMediaRepo {
         items: HashMap<String, Media>,
         adj_lists: HashMap<String, Vec<(String, String)>>,
+        tag_adj_lists: HashMap<String, Vec<(String, String)>>,
+        relationship_tags: HashMap<String, Vec<Tag>>,
         should_fail: bool,
+        tag_should_fail: bool,
     }
 
     impl MockMediaRepo {
@@ -200,7 +479,10 @@ mod tests {
             Self {
                 items: HashMap::new(),
                 adj_lists: HashMap::new(),
+                tag_adj_lists: HashMap::new(),
+                relationship_tags: HashMap::new(),
                 should_fail: false,
+                tag_should_fail: false,
             }
         }
 
@@ -214,11 +496,40 @@ mod tests {
             self
         }
 
+        fn with_tag_adj_list(
+            mut self,
+            tag_id: impl Into<String>,
+            list: Vec<(String, String)>,
+        ) -> Self {
+            self.tag_adj_lists.insert(tag_id.into(), list);
+            self
+        }
+
+        fn with_relationship_tags(mut self, relationship: &str, tags: Vec<Tag>) -> Self {
+            self.relationship_tags
+                .insert(relationship.to_string(), tags);
+            self
+        }
+
         fn failing() -> Self {
             Self {
                 items: HashMap::new(),
                 adj_lists: HashMap::new(),
+                tag_adj_lists: HashMap::new(),
+                relationship_tags: HashMap::new(),
                 should_fail: true,
+                tag_should_fail: true,
+            }
+        }
+
+        fn media_failing() -> Self {
+            Self {
+                items: HashMap::new(),
+                adj_lists: HashMap::new(),
+                tag_adj_lists: HashMap::new(),
+                relationship_tags: HashMap::new(),
+                should_fail: true,
+                tag_should_fail: false,
             }
         }
     }
@@ -273,6 +584,81 @@ mod tests {
                 return Err(MockError);
             }
             Ok(self.adj_lists.get(id.as_str()).cloned())
+        }
+    }
+
+    impl TagRepository for MockMediaRepo {
+        type Error = MockError;
+
+        fn init(&self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn tag_exists(&self, id: &str) -> Result<bool, Self::Error> {
+            if self.tag_should_fail {
+                return Err(MockError);
+            }
+            Ok(self.tag_adj_lists.contains_key(id))
+        }
+
+        fn add_tag_edge(
+            &self,
+            _media_id: &str,
+            _tag: &Tag,
+            _relationship: &str,
+        ) -> Result<(), Self::Error> {
+            if self.tag_should_fail {
+                return Err(MockError);
+            }
+            Ok(())
+        }
+
+        fn get_tag_adj_list(
+            &self,
+            tag_id: &str,
+        ) -> Result<Option<Vec<(String, String)>>, Self::Error> {
+            if self.tag_should_fail {
+                return Err(MockError);
+            }
+            Ok(self.tag_adj_lists.get(tag_id).cloned())
+        }
+
+        fn get_relationships_by_prefix(
+            &self,
+            prefix: &str,
+            limit: Option<usize>,
+        ) -> Result<Option<Vec<String>>, Self::Error> {
+            if self.tag_should_fail {
+                return Err(MockError);
+            }
+            if limit == Some(0) {
+                return Ok(None);
+            }
+            let mut relationships: Vec<String> = self
+                .relationship_tags
+                .keys()
+                .filter(|relationship| relationship.starts_with(prefix))
+                .cloned()
+                .collect();
+            relationships.sort();
+            if let Some(limit) = limit {
+                relationships.truncate(limit);
+            }
+            if relationships.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(relationships))
+            }
+        }
+
+        fn get_tags_by_relationship(
+            &self,
+            relationship: &str,
+        ) -> Result<Option<Vec<Tag>>, Self::Error> {
+            if self.tag_should_fail {
+                return Err(MockError);
+            }
+            Ok(self.relationship_tags.get(relationship).cloned())
         }
     }
 
@@ -419,6 +805,154 @@ mod tests {
         ids.iter()
             .map(|id| MediaId::from_hash(*id).unwrap())
             .collect()
+    }
+
+    fn enriched_query_repo() -> MockMediaRepo {
+        let media_a = Media::new(
+            MediaId::from_hash("media-a").unwrap(),
+            Url::parse("file:///media-a.png").unwrap(),
+            None,
+        );
+        let media_b = Media::new(
+            MediaId::from_hash("media-b").unwrap(),
+            Url::parse("file:///media-b.png").unwrap(),
+            None,
+        );
+        MockMediaRepo::new()
+            .with_media(media_a)
+            .with_media(media_b)
+            .with_tag_adj_list(
+                "search_a",
+                vec![
+                    ("search".into(), "media-a".into()),
+                    ("search".into(), "media-b".into()),
+                    ("search".into(), "missing-media".into()),
+                ],
+            )
+            .with_tag_adj_list(
+                "search_b",
+                vec![
+                    ("search".into(), "media-a".into()),
+                    ("search".into(), "media-b".into()),
+                    ("search".into(), "missing-media".into()),
+                ],
+            )
+            .with_adj_list(
+                "media-a",
+                vec![
+                    ("subject".into(), "search_a".into()),
+                    ("subject".into(), "rare".into()),
+                    ("subject".into(), "shared".into()),
+                    ("place".into(), "coast".into()),
+                ],
+            )
+            .with_adj_list(
+                "media-b",
+                vec![
+                    ("subject".into(), "search_b".into()),
+                    ("subject".into(), "shared".into()),
+                    ("place".into(), "coast".into()),
+                ],
+            )
+            .with_adj_list(
+                "missing-media",
+                vec![
+                    ("subject".into(), "search_a".into()),
+                    ("subject".into(), "search_b".into()),
+                    ("subject".into(), "shared".into()),
+                ],
+            )
+            .with_relationship_tags(
+                "subject",
+                vec![
+                    Tag::from_parts("search_a", "Search A"),
+                    Tag::from_parts("search_b", "Search B"),
+                    Tag::from_parts("rare", "Rare"),
+                    Tag::from_parts("shared", "Shared"),
+                ],
+            )
+            .with_relationship_tags("place", vec![Tag::from_parts("coast", "Coast")])
+    }
+
+    #[test]
+    fn test_get_enriched_media_by_logical_and_aggregates_relationship_tags() {
+        let repo = enriched_query_repo();
+
+        let result = get_enriched_media_by_logical_and(["search_a", "search_b"], 4, &repo).unwrap();
+
+        assert_eq!(
+            result.relationships,
+            vec![
+                RelationshipTagGroup {
+                    relationship: "place".into(),
+                    tags: vec![CountedTag {
+                        tag: Tag::from_parts("coast", "Coast"),
+                        count: 2,
+                    }],
+                },
+                RelationshipTagGroup {
+                    relationship: "subject".into(),
+                    tags: vec![
+                        CountedTag {
+                            tag: Tag::from_parts("rare", "Rare"),
+                            count: 1,
+                        },
+                        CountedTag {
+                            tag: Tag::from_parts("shared", "Shared"),
+                            count: 3,
+                        },
+                    ],
+                },
+            ]
+        );
+        assert_eq!(
+            result.media,
+            MediaQueryItems::Items(vec![
+                repo.items.get("media-a").unwrap().clone(),
+                repo.items.get("media-b").unwrap().clone(),
+            ])
+        );
+
+        let at_limit =
+            get_enriched_media_by_logical_and(["search_a", "search_b"], 3, &repo).unwrap();
+        assert_eq!(at_limit.media, MediaQueryItems::Count(3));
+    }
+
+    #[test]
+    fn test_enriched_query_wrappers_preserve_other_query_strategies() {
+        let repo = enriched_query_repo();
+
+        let logical_or =
+            get_enriched_media_by_logical_or(["search_a", "search_b"], 3, &repo).unwrap();
+        assert_eq!(logical_or.media, MediaQueryItems::Count(3));
+
+        let and_then_or =
+            get_enriched_media_by_logical_and_then_or([["search_a"], ["search_b"]], 3, &repo)
+                .unwrap();
+        assert_eq!(and_then_or.media, MediaQueryItems::Count(3));
+
+        let or_then_and = get_enriched_media_by_logical_or_then_and(
+            vec![vec!["search_a", "search_b"], vec!["search_a"]],
+            3,
+            &repo,
+        )
+        .unwrap();
+        assert_eq!(or_then_and.media, MediaQueryItems::Count(3));
+    }
+
+    #[test]
+    fn test_enriched_query_propagates_repository_errors() {
+        assert!(matches!(
+            get_enriched_media_by_logical_and(["search_a"], 5, &MockMediaRepo::failing()),
+            Err(EnrichedQueryError::TagRepository(_))
+        ));
+
+        let repo = MockMediaRepo::media_failing()
+            .with_tag_adj_list("search_a", vec![("search".into(), "media-a".into())]);
+        assert!(matches!(
+            get_enriched_media_by_logical_and(["search_a"], 5, &repo),
+            Err(EnrichedQueryError::MediaRepository(_))
+        ));
     }
 
     #[test]
