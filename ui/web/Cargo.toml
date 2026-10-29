@@ -10,6 +10,11 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-recondo-domain = { path = "../../domain" }
-recondo-dal = { path = "../../dal" }
-redb = "4.4.0"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net"] }
+axum = "0.8.9"
+maud = { version = "0.27.0", features = ["axum"] }
+datastar = { version = "0.4.1", features = ["axum"] }
+tokio-stream = "0.1.19"
+
+[dev-dependencies]
+tower = { version = "0.5.3", features = ["util"] }
