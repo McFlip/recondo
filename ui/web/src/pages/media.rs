@@ -152,8 +152,25 @@ pub fn render(
                     data-on:click="el.closest('dialog').close()" {
                     "×"
                 }
+                button
+                    type="button"
+                    id="media-lightbox-prev"
+                    class="media-lightbox-nav media-lightbox-prev"
+                    aria-label="Previous image"
+                    data-on:click="window.mediaLightboxPrev()" {
+                    "‹"
+                }
+                button
+                    type="button"
+                    id="media-lightbox-next"
+                    class="media-lightbox-nav media-lightbox-next"
+                    aria-label="Next image"
+                    data-on:click="window.mediaLightboxNext()" {
+                    "›"
+                }
                 img id="media-lightbox-image" alt="Full-size media preview";
             }
+            script src="/media.js" {}
         },
     )
 }
@@ -491,11 +508,7 @@ fn media_card(item: &Media) -> Markup {
                         src=(asset_url)
                         alt=(title)
                         loading="lazy"
-                        data-on:click="
-                            const dialog = document.getElementById('media-lightbox');
-                            document.getElementById('media-lightbox-image').src = el.src;
-                            dialog.showModal();
-                        ";
+                        data-on:click="window.openMediaLightbox(el)";
                 } @else if mime_type.starts_with("video/") {
                     video controls preload="metadata" src=(asset_url) {
                         "Your browser does not support embedded video."

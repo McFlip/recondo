@@ -6,12 +6,13 @@ import { join } from 'node:path';
 
 async function seedMedia(page: Page) {
   const image = join(process.cwd(), 'ui/web/tests/fixtures/data_trap.png');
+  const image2 = join(process.cwd(), 'ui/web/tests/fixtures/exploits_of_a_mom.png');
   const document = join(tmpdir(), `recondo-media-${randomUUID()}.txt`);
   writeFileSync(document, `media page test ${randomUUID()}`);
 
   try {
     await page.goto('/upload');
-    await page.locator('#file-input').setInputFiles([image, document]);
+    await page.locator('#file-input').setInputFiles([image, image2, document]);
     await expect(page.locator('#upload-status')).toContainText('Upload complete');
   } finally {
     unlinkSync(document);
@@ -52,10 +53,13 @@ test('Explore tags open media results with removable selection and media viewers
       ),
     )
     .toBeTruthy();
-  const imageSrc = await page.locator('.media-preview img').evaluateAll(
+  const allImages = await page.locator('.media-preview img').evaluateAll(
     (images) =>
-      images.find((image) => (image as HTMLImageElement).naturalWidth > 0)?.getAttribute('src'),
+      images
+        .filter((image) => (image as HTMLImageElement).naturalWidth > 0)
+        .map((image) => image.getAttribute('src')),
   );
+  const imageSrc = allImages[0];
   const image = page.locator(`.media-preview img[src="${imageSrc}"]`);
   expect(
     await image.evaluate((element: HTMLImageElement) => {
@@ -68,6 +72,39 @@ test('Explore tags open media results with removable selection and media viewers
   await image.click();
   await expect(page.locator('#media-lightbox')).toBeVisible();
   await expect(page.locator('#media-lightbox-image')).toBeVisible();
+
+  // Test lightbox navigation arrows and hotkeys
+  const prevBtn = page.locator('#media-lightbox-prev');
+  const nextBtn = page.locator('#media-lightbox-next');
+  await expect(prevBtn).toBeVisible();
+  await expect(nextBtn).toBeVisible();
+
+  const initialSrc = await page.locator('#media-lightbox-image').getAttribute('src');
+  if (imageSrc === allImages[0]) {
+    await expect(prevBtn).toBeDisabled();
+    await expect(nextBtn).toBeEnabled();
+
+    // Navigate next via click
+    await nextBtn.click();
+    await expect(page.locator('#media-lightbox-image')).not.toHaveAttribute('src', initialSrc!);
+
+    // Navigate prev via 'h' hotkey
+    await page.keyboard.press('h');
+    await expect(page.locator('#media-lightbox-image')).toHaveAttribute('src', initialSrc!);
+
+    // Navigate next via 'l' hotkey
+    await page.keyboard.press('l');
+    await expect(page.locator('#media-lightbox-image')).not.toHaveAttribute('src', initialSrc!);
+
+    // Navigate prev via ArrowLeft
+    await page.keyboard.press('ArrowLeft');
+    await expect(page.locator('#media-lightbox-image')).toHaveAttribute('src', initialSrc!);
+
+    // Navigate next via ArrowRight
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('#media-lightbox-image')).not.toHaveAttribute('src', initialSrc!);
+  }
+
   await page.getByRole('button', { name: 'Close image' }).click();
   await expect(page.locator('#media-lightbox')).not.toBeVisible();
 

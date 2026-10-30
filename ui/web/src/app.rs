@@ -61,6 +61,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/upload/relationship", get(show_upload_relationship))
         .route("/upload.js", get(upload_script))
+        .route("/media.js", get(media_script))
         .route("/demo/{filter}", get(filter_demo))
         .route("/styles.css", get(stylesheet))
         .route("/media/{filename}", get(media_asset))
@@ -100,6 +101,13 @@ async fn upload_script() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
         include_str!("../static/upload.js"),
+    )
+}
+
+async fn media_script() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("../static/media.js"),
     )
 }
 
