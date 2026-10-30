@@ -84,6 +84,184 @@ impl RedbMediaRepository {
     }
 }
 
+fn persist_media_file_with_tags(
+    db: &Database,
+    media: &Media,
+    src_path: &Path,
+    dest_path: &Path,
+    tags: &[(String, Tag)],
+) -> Result<(), SaveMediaError<Error>> {
+    let media_id = dest_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| {
+            SaveMediaError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "destination path has no file stem",
+            ))
+        })?
+        .to_string();
+
+    if let Some(parent) = dest_path.parent() {
+        fs::create_dir_all(parent).map_err(SaveMediaError::Io)?;
+    }
+    fs::copy(src_path, dest_path).map_err(SaveMediaError::Io)?;
+
+    let write_txn = db
+        .begin_write()
+        .map_err(|error| SaveMediaError::Repository(error.into()))?;
+    {
+        insert_media_record_txn(&write_txn, media).map_err(SaveMediaError::Repository)?;
+        let mut media_table = write_txn
+            .open_table(MEDIA_ADJ_LST)
+            .map_err(|error| SaveMediaError::Repository(error.into()))?;
+        let mut tag_table = write_txn
+            .open_table(TAG_ADJ_LST)
+            .map_err(|error| SaveMediaError::Repository(error.into()))?;
+        let mut tag_name_table = write_txn
+            .open_table(TAG)
+            .map_err(|error| SaveMediaError::Repository(error.into()))?;
+
+        for (relationship, tag) in tags {
+            let relationship = normalize_relationship(relationship);
+            if relationship.is_empty() {
+                return Err(SaveMediaError::Tag(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "relationship must not be empty",
+                ))));
+            }
+            let media_edge = (relationship.clone(), tag.id().to_string());
+            let existing_media = media_table
+                .get(media_id.as_str())
+                .map_err(|error| SaveMediaError::Repository(error.into()))?
+                .map(|value| value.value())
+                .unwrap_or_default();
+            if !existing_media.contains(&media_edge) {
+                let mut edges = existing_media;
+                edges.push(media_edge);
+                media_table
+                    .insert(media_id.as_str(), edges)
+                    .map_err(|error| SaveMediaError::Repository(error.into()))?;
+            }
+
+            let tag_edge = (relationship.clone(), media_id.clone());
+            let existing_tag = tag_table
+                .get(tag.id())
+                .map_err(|error| SaveMediaError::Repository(error.into()))?
+                .map(|value| value.value())
+                .unwrap_or_default();
+            if !existing_tag.contains(&tag_edge) {
+                let mut edges = existing_tag;
+                edges.push(tag_edge);
+                tag_table
+                    .insert(tag.id(), edges)
+                    .map_err(|error| SaveMediaError::Repository(error.into()))?;
+            }
+
+            tag_name_table
+                .insert(tag.id(), tag.name())
+                .map_err(|error| SaveMediaError::Repository(error.into()))?;
+            upsert_relationship_tag_txn(&write_txn, &relationship, tag.id()).map_err(|error| {
+                match error {
+                    RelationshipSetError::EmptyRelationship => {
+                        SaveMediaError::Tag(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "relationship must not be empty",
+                        )))
+                    }
+                    RelationshipSetError::Repository(error) => SaveMediaError::Repository(error),
+                }
+            })?;
+        }
+    }
+    write_txn.commit().map_err(|error| {
+        let _ = fs::remove_file(dest_path);
+        SaveMediaError::Repository(error.into())
+    })?;
+    Ok(())
+}
+
+fn default_upload_tag() -> (String, Tag) {
+    (
+        normalize_relationship("to do"),
+        Tag::new("needs tags").expect("the default upload tag is non-empty"),
+    )
+}
+
+fn apply_upload_tags_to_duplicate(
+    db: &Database,
+    media_id: &MediaId,
+    tags: &[(String, Tag)],
+) -> Result<(), Error> {
+    let write_txn = db.begin_write()?;
+    {
+        let (default_relationship, default_tag) = default_upload_tag();
+        let default_edge = (default_relationship.clone(), default_tag.id().to_string());
+        let default_tag_edge = (default_relationship.clone(), media_id.as_str().to_string());
+        let mut media_table = write_txn.open_table(MEDIA_ADJ_LST)?;
+        let mut media_edges = media_table
+            .get(media_id.as_str())?
+            .ok_or_else(|| Error::Corrupted("duplicate media has no tag adjacency list".into()))?
+            .value();
+
+        if media_edges.len() == 1 && media_edges.first() == Some(&default_edge) {
+            media_edges.clear();
+            media_table.insert(media_id.as_str(), media_edges)?;
+
+            let mut tag_table = write_txn.open_table(TAG_ADJ_LST)?;
+            let mut default_tag_edges = tag_table
+                .get(default_tag.id())?
+                .map(|value| value.value())
+                .unwrap_or_default();
+            default_tag_edges.retain(|edge| edge != &default_tag_edge);
+            tag_table.insert(default_tag.id(), default_tag_edges)?;
+        }
+
+        let mut tag_table = write_txn.open_table(TAG_ADJ_LST)?;
+        let mut tag_name_table = write_txn.open_table(TAG)?;
+        for (relationship, tag) in tags {
+            let relationship = normalize_relationship(relationship);
+            if relationship.is_empty() {
+                return Err(Error::Corrupted(
+                    "upload tag relationship must not be empty".into(),
+                ));
+            }
+            let media_edge = (relationship.clone(), tag.id().to_string());
+            let mut media_edges = media_table
+                .get(media_id.as_str())?
+                .ok_or_else(|| {
+                    Error::Corrupted("duplicate media has no tag adjacency list".into())
+                })?
+                .value();
+            if !media_edges.contains(&media_edge) {
+                media_edges.push(media_edge);
+                media_table.insert(media_id.as_str(), media_edges)?;
+            }
+
+            let tag_edge = (relationship.clone(), media_id.as_str().to_string());
+            let mut tag_edges = tag_table
+                .get(tag.id())?
+                .map(|value| value.value())
+                .unwrap_or_default();
+            if !tag_edges.contains(&tag_edge) {
+                tag_edges.push(tag_edge);
+                tag_table.insert(tag.id(), tag_edges)?;
+            }
+            tag_name_table.insert(tag.id(), tag.name())?;
+            upsert_relationship_tag_txn(&write_txn, &relationship, tag.id()).map_err(|error| {
+                match error {
+                    RelationshipSetError::EmptyRelationship => {
+                        Error::Corrupted("upload tag relationship must not be empty".into())
+                    }
+                    RelationshipSetError::Repository(error) => error,
+                }
+            })?;
+        }
+    }
+    write_txn.commit()?;
+    Ok(())
+}
+
 impl MediaRepository for RedbMediaRepository {
     type Error = Error;
 
@@ -101,90 +279,34 @@ impl MediaRepository for RedbMediaRepository {
         src_path: &Path,
         dest_path: &Path,
     ) -> Result<(), SaveMediaError<Self::Error>> {
-        let hash = dest_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| {
-                SaveMediaError::Io(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "destination path has no file stem",
-                ))
-            })?
-            .to_string();
+        persist_media_file_with_tags(
+            &self.db,
+            media,
+            src_path,
+            dest_path,
+            &[default_upload_tag()],
+        )
+    }
 
-        if let Some(parent) = dest_path.parent() {
-            fs::create_dir_all(parent).map_err(SaveMediaError::Io)?;
+    fn save_media_with_tags(
+        &self,
+        media: &Media,
+        src_path: &Path,
+        dest_path: &Path,
+        tags: &[(String, Tag)],
+    ) -> Result<(), SaveMediaError<Self::Error>> {
+        persist_media_file_with_tags(&self.db, media, src_path, dest_path, tags)
+    }
+
+    fn apply_upload_tags_to_duplicate(
+        &self,
+        media_id: &MediaId,
+        tags: &[(String, Tag)],
+    ) -> Result<(), Self::Error> {
+        if tags.is_empty() {
+            return Ok(());
         }
-        fs::copy(src_path, dest_path).map_err(SaveMediaError::Io)?;
-
-        let write_txn = self
-            .db
-            .begin_write()
-            .map_err(|e| SaveMediaError::Repository(e.into()))?;
-        {
-            insert_media_record_txn(&write_txn, media).map_err(SaveMediaError::Repository)?;
-
-            let tag = Tag::new("needs tags").map_err(|e| SaveMediaError::Tag(Box::new(e)))?;
-            let relationship = normalize_relationship("to do");
-            let media_edge = (relationship.clone(), tag.id().to_string());
-            let tag_edge = (relationship.clone(), hash.to_string());
-
-            let mut media_table = write_txn
-                .open_table(MEDIA_ADJ_LST)
-                .map_err(|e| SaveMediaError::Repository(e.into()))?;
-            let existing_media = media_table
-                .get(hash.as_str())
-                .map_err(|e| SaveMediaError::Repository(e.into()))?
-                .map(|value| value.value())
-                .unwrap_or_default();
-            if !existing_media.contains(&media_edge) {
-                let mut edges = existing_media;
-                edges.push(media_edge);
-                media_table
-                    .insert(hash.as_str(), edges)
-                    .map_err(|e| SaveMediaError::Repository(e.into()))?;
-            }
-
-            let mut tag_table = write_txn
-                .open_table(TAG_ADJ_LST)
-                .map_err(|e| SaveMediaError::Repository(e.into()))?;
-            let existing_tag = tag_table
-                .get(tag.id())
-                .map_err(|e| SaveMediaError::Repository(e.into()))?
-                .map(|value| value.value())
-                .unwrap_or_default();
-            if !existing_tag.contains(&tag_edge) {
-                let mut edges = existing_tag;
-                edges.push(tag_edge);
-                tag_table
-                    .insert(tag.id(), edges)
-                    .map_err(|e| SaveMediaError::Repository(e.into()))?;
-            }
-
-            let mut tag_name_table = write_txn
-                .open_table(TAG)
-                .map_err(|e| SaveMediaError::Repository(e.into()))?;
-            tag_name_table
-                .insert(tag.id(), tag.name())
-                .map_err(|e| SaveMediaError::Repository(e.into()))?;
-
-            upsert_relationship_tag_txn(&write_txn, &relationship, tag.id()).map_err(
-                |e| match e {
-                    RelationshipSetError::EmptyRelationship => {
-                        SaveMediaError::Tag(Box::new(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "relationship must not be empty",
-                        )))
-                    }
-                    RelationshipSetError::Repository(err) => SaveMediaError::Repository(err),
-                },
-            )?;
-        }
-        write_txn.commit().map_err(|e| {
-            let _ = fs::remove_file(dest_path);
-            SaveMediaError::Repository(e.into())
-        })?;
-        Ok(())
+        apply_upload_tags_to_duplicate(&self.db, media_id, tags)
     }
 
     fn save_media_record(&self, media: &Media) -> Result<(), Self::Error> {
@@ -331,6 +453,69 @@ mod tests {
         let expected_tag = Tag::new("needs tags").unwrap().id().to_string();
         let tag = tag_table.get(expected_tag.as_str()).unwrap().unwrap();
         assert_eq!(tag.value().len(), 1);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn upload_tags_replace_only_the_default_pair_for_duplicates() {
+        let base = temp_base("upload_tag_replacement");
+        let src = base.join("src.txt");
+        fs::write(&src, b"upload tag behavior").unwrap();
+
+        let db_path = base.join("test.redb");
+        let db = Database::create(&db_path).unwrap();
+        init_db(&db).unwrap();
+        let repo = RedbMediaRepository::new(db);
+
+        let default_only = make_test_media("default_only");
+        repo.save_media(
+            &default_only,
+            &src,
+            &base.join("assets").join("default_only.txt"),
+        )
+        .unwrap();
+        let selected = ("occasion".to_string(), Tag::new("birthday").unwrap());
+        repo.apply_upload_tags_to_duplicate(&default_only.id, std::slice::from_ref(&selected))
+            .unwrap();
+        assert_eq!(
+            repo.get_media_adj_list(&default_only.id).unwrap().unwrap(),
+            vec![("occasion".to_string(), selected.1.id().to_string())]
+        );
+
+        let existing_pair = ("place".to_string(), Tag::new("kitchen").unwrap());
+        let tagged_media = make_test_media("already_tagged");
+        repo.save_media_with_tags(
+            &tagged_media,
+            &src,
+            &base.join("assets").join("already_tagged.txt"),
+            std::slice::from_ref(&existing_pair),
+        )
+        .unwrap();
+        repo.apply_upload_tags_to_duplicate(&tagged_media.id, std::slice::from_ref(&selected))
+            .unwrap();
+        assert_eq!(
+            repo.get_media_adj_list(&tagged_media.id).unwrap().unwrap(),
+            vec![
+                ("place".to_string(), existing_pair.1.id().to_string()),
+                ("occasion".to_string(), selected.1.id().to_string()),
+            ]
+        );
+
+        let read_txn = repo.database().begin_read().unwrap();
+        let tag_table = read_txn.open_table(TAG_ADJ_LST).unwrap();
+        let default_tag = Tag::new("needs tags").unwrap();
+        let default_edges = tag_table.get(default_tag.id()).unwrap().unwrap().value();
+        assert!(
+            !default_edges
+                .iter()
+                .any(|edge| edge.1 == default_only.id.as_str())
+        );
+        assert!(
+            !default_edges
+                .iter()
+                .any(|edge| edge.1 == tagged_media.id.as_str())
+        );
 
         let _ = fs::remove_dir_all(&base);
     }
@@ -604,8 +789,7 @@ mod tests {
         let tag2 = Tag::new("tag2").unwrap();
         let tag3 = Tag::new("tag3").unwrap();
 
-        repo.add_tag_edge("hash123", &tag1, "total recall")
-            .unwrap();
+        repo.add_tag_edge("hash123", &tag1, "total recall").unwrap();
         repo.add_tag_edge("hash123", &tag2, "topic").unwrap();
         repo.add_tag_edge("hash123", &tag3, "other").unwrap();
         // Note: save_media automatically creates a "to do" edge with tag "needs tags"

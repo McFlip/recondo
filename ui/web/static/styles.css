@@ -251,6 +251,33 @@ h1 em, h2 em { color: var(--accent); font-family: var(--serif); font-weight: 500
 .upload-heading { margin-bottom: 32px; }
 .upload-panel { display: flex; flex-direction: column; gap: 32px; }
 .upload-form { display: flex; flex-direction: column; gap: 16px; }
+.upload-tagging { display: flex; flex-direction: column; gap: 18px; padding: 21px; border: 1px solid var(--line); background: var(--panel); }
+.upload-tagging-heading h2 { margin: 0 0 7px; font-family: var(--serif); font-size: 23px; font-weight: 500; }
+.upload-tagging-heading .eyebrow { margin-bottom: 7px; font-size: 8px; }
+.upload-tagging-heading .processed-hint, .new-upload-tag-pair .processed-hint { margin: 0; line-height: 1.6; }
+.selected-upload-tags-section > .media-control-label { margin-bottom: 7px; }
+.selected-upload-tags { display: flex; flex-wrap: wrap; gap: 7px; }
+.selected-upload-tag { display: inline-flex; align-items: center; gap: 9px; min-height: 32px; padding-left: 10px; border: 1px solid #465139; background: #1b2116; color: var(--accent); font-family: var(--mono); font-size: 10px; }
+.selected-upload-tag-label { overflow-wrap: anywhere; }
+.selected-upload-tag-remove { display: grid; width: 30px; height: 30px; place-items: center; border: 0; border-left: 1px solid #465139; background: transparent; color: #d5d8ca; cursor: pointer; font-family: var(--sans); font-size: 18px; line-height: 1; }
+.selected-upload-tag-remove:hover { background: #303b22; color: var(--accent); }
+#upload-tag-error { min-height: 0; }
+.upload-tag-picker { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+.upload-existing-tag-picker { display: flex; min-width: 0; flex-direction: column; gap: 9px; }
+.upload-relationship-query, .new-upload-tag-pair input { width: 100%; min-height: 40px; padding: 0 11px; border: 1px solid #3a3f34; border-radius: 2px; outline: none; background: #11130f; color: var(--ink); font: inherit; font-size: 12px; }
+.upload-relationship-query:focus, .new-upload-tag-pair input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgb(198 243 107 / 12%); }
+.upload-relationship-suggestions, .upload-relationship-details { min-width: 0; padding: 12px; border: 1px solid var(--line); }
+.upload-relationship-suggestions:empty, .upload-relationship-details:empty { display: none; }
+.upload-relationship-suggestions .suggestion-count { margin-bottom: 7px; }
+.upload-relationship-details { display: flex; flex-direction: column; gap: 9px; }
+.upload-relationship-details > .media-control-label { margin: 0; }
+.upload-relationship-tag-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 7px; }
+.upload-existing-tag { min-height: 39px; padding: 8px; background: #171a14; cursor: pointer; text-align: left; }
+.upload-existing-tag:hover { border-color: var(--accent); color: var(--accent); }
+.new-upload-tag-pair { display: flex; min-width: 0; flex-direction: column; align-items: stretch; gap: 8px; margin: 0; padding: 13px; border: 1px solid var(--line); }
+.new-upload-tag-pair legend { padding: 0 6px; color: var(--muted); font-size: 12px; }
+.new-upload-tag-pair label { color: var(--faint); font-family: var(--mono); font-size: 9px; letter-spacing: .08em; }
+.upload-add-tag { align-self: flex-start; }
 .upload-dropzone {
   position: relative;
   display: flex;
@@ -335,9 +362,12 @@ h1 em, h2 em { color: var(--accent); font-family: var(--serif); font-weight: 500
 }
 
 .processed-section { display: flex; flex-direction: column; gap: 16px; }
-.processed-heading { display: flex; flex-direction: column; gap: 4px; }
+.processed-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.processed-heading h2 { margin: 0 0 4px; }
 .processed-heading h2 { font-size: 18px; font-weight: 500; }
 .processed-hint { font-size: 12px; color: var(--muted); }
+.clear-upload-list { flex: 0 0 auto; min-height: 34px; padding: 0 11px; border: 1px solid #3a3f34; background: transparent; color: var(--muted); cursor: pointer; font: inherit; font-size: 10px; }
+.clear-upload-list:hover { border-color: var(--accent); color: var(--accent); }
 .processed-feed {
   display: flex;
   flex-direction: column;
@@ -475,6 +505,9 @@ h1 em, h2 em { color: var(--accent); font-family: var(--serif); font-weight: 500
   .relationship-suggestions, .relationship-details { grid-column: 1; padding: 18px; }
   .relationship-details { border-left: 0; }
   .relationship-result-card { padding: 13px; }
+  .upload-tagging { padding: 16px; }
+  .upload-tag-picker { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .processed-heading { align-items: flex-start; flex-direction: column; }
   .media-workspace { grid-template-columns: minmax(0, 1fr); }
   .media-sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
   .relationship-accordion-list { max-height: 250px; }

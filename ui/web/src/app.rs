@@ -17,7 +17,7 @@ use datastar::{
     prelude::{PatchElements, PatchSignals},
 };
 use recondo_dal::media::RedbMediaRepository;
-use recondo_domain::cmd::{CreateMediaOutcome, create_media_from_file_in};
+use recondo_domain::cmd::{CreateMediaOutcome, create_media_from_file_in_with_tags};
 use recondo_domain::model::{MediaId, Tag, normalize_relationship};
 use recondo_domain::repository::{MediaRepository, TagRepository};
 use recondo_domain::{
@@ -55,6 +55,12 @@ pub fn router(state: AppState) -> Router {
         .route("/asset/{id}", get(media_asset_by_id))
         .route("/upload", get(upload_page))
         .route("/upload", post(upload_handler))
+        .route(
+            "/upload/relationship-search",
+            get(search_upload_relationships),
+        )
+        .route("/upload/relationship", get(show_upload_relationship))
+        .route("/upload.js", get(upload_script))
         .route("/demo/{filter}", get(filter_demo))
         .route("/styles.css", get(stylesheet))
         .route("/media/{filename}", get(media_asset))
@@ -88,6 +94,74 @@ async fn landing_page() -> maud::Markup {
 
 async fn upload_page() -> maud::Markup {
     upload::render()
+}
+
+async fn upload_script() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+        include_str!("../static/upload.js"),
+    )
+}
+
+async fn search_upload_relationships(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let prefix = params.get("prefix").cloned().unwrap_or_default();
+    let query_prefix = prefix.clone();
+    let repo = state.repo;
+    let result = tokio::task::spawn_blocking(move || {
+        get_relationships_by_prefix(&query_prefix, Some(12), repo.as_ref())
+    })
+    .await;
+
+    let markup = match result {
+        Ok(Ok(relationships)) => {
+            upload::relationship_suggestions(&prefix, relationships.as_deref().unwrap_or_default())
+        }
+        Ok(Err(error)) => {
+            eprintln!("Error searching upload relationships by prefix {prefix:?}: {error}");
+            upload::relationship_error(&format!("Could not search relationships: {error}"))
+        }
+        Err(error) => {
+            eprintln!("Upload relationship search task failed for {prefix:?}: {error}");
+            upload::relationship_error(&format!("Relationship search failed: {error}"))
+        }
+    };
+    patch_response("#upload-relationship-suggestions", markup)
+}
+
+async fn show_upload_relationship(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let relationship = params.get("name").cloned().unwrap_or_default();
+    let markup = if normalize_relationship(&relationship).is_empty() {
+        upload::relationship_tags_error("Choose a relationship to see its tags.")
+    } else {
+        let query_relationship = relationship.clone();
+        let repo = state.repo;
+        match tokio::task::spawn_blocking(move || {
+            get_tags_by_relationship(&query_relationship, repo.as_ref())
+                .map(|tags| tags.unwrap_or_default())
+                .map_err(|error| error.to_string())
+        })
+        .await
+        {
+            Ok(Ok(tags)) => upload::relationship_tags(&relationship, &tags),
+            Ok(Err(error)) => {
+                eprintln!("Error loading upload tags for relationship {relationship:?}: {error}");
+                upload::relationship_tags_error(&format!(
+                    "Could not load relationship tags: {error}"
+                ))
+            }
+            Err(error) => {
+                eprintln!("Upload relationship tag lookup task failed: {error}");
+                upload::relationship_tags_error(&format!("Relationship tag lookup failed: {error}"))
+            }
+        }
+    };
+    patch_response("#upload-relationship-details", markup)
 }
 
 async fn explore_page() -> maud::Markup {
@@ -564,6 +638,43 @@ fn progress_event(processed_count: usize, errored: bool) -> axum::response::sse:
     PatchSignals::new(format!("{{processedCount: {processed_count}{flag}}}")).into()
 }
 
+enum StagedUpload {
+    File {
+        filename: String,
+        content_type: Option<String>,
+        file_size: u64,
+        temp_file: tempfile::NamedTempFile,
+    },
+    Failed {
+        filename: String,
+        reason: String,
+    },
+}
+
+fn parse_upload_tag_pair(value: &str) -> Result<(String, String), String> {
+    let mut relationship = None;
+    let mut tag_name = None;
+    for (key, value) in url::form_urlencoded::parse(value.as_bytes()) {
+        match key.as_ref() {
+            "relationship" if relationship.is_none() => {
+                relationship = Some(value.into_owned());
+            }
+            "tag" if tag_name.is_none() => {
+                tag_name = Some(value.into_owned());
+            }
+            "relationship" | "tag" => return Err("A tag pair contains duplicate fields.".into()),
+            _ => return Err("A tag pair contains an unsupported field.".into()),
+        }
+    }
+
+    let relationship = relationship.ok_or("Each selected tag needs a relationship.")?;
+    let relationship = recondo_domain::model::new_relationship(&relationship)
+        .map_err(|error| error.to_string())?;
+    let tag = Tag::new(tag_name.ok_or("Each selected relationship needs a tag.")?)
+        .map_err(|error| error.to_string())?;
+    Ok((relationship, tag.name().to_string()))
+}
+
 async fn upload_handler(
     State(state): State<AppState>,
     mut multipart: Multipart,
@@ -574,28 +685,59 @@ async fn upload_handler(
         // sending a replace patch here would warn about a missing selector on
         // every upload after the first.
 
-        let mut processed_count = 0usize;
-
+        let mut staged_uploads = Vec::new();
+        let mut tag_pairs = Vec::new();
+        let mut request_error = None;
         loop {
             let mut field = match multipart.next_field().await {
                 Ok(Some(field)) => field,
                 Ok(None) => break,
                 Err(err) => {
-                    eprintln!("Error reading multipart stream: {err}");
-                    yield Ok(feed_event(
-                        upload::media_error_card("(upload)", &format!("Upload stream error: {err}"))
-                            .into_string(),
-                    ));
-                    yield Ok(PatchSignals::new("{errored: true}").into());
+                    request_error = Some(format!("Upload stream error: {err}"));
                     break;
                 }
             };
 
-            let filename = field
-                .file_name()
-                .map(str::to_string)
-                .unwrap_or_else(|| "unnamed_file".to_string());
+            let field_name = field.name().unwrap_or_default().to_string();
+            let filename = field.file_name().map(str::to_string);
             let content_type = field.content_type().map(str::to_string);
+
+            if field_name == "tag_pair" && filename.is_none() {
+                match field.text().await {
+                    Ok(value) => match parse_upload_tag_pair(&value) {
+                        Ok(pair) => {
+                            if !tag_pairs.contains(&pair) {
+                                tag_pairs.push(pair);
+                            }
+                        }
+                        Err(error) => request_error = Some(error),
+                    },
+                    Err(error) => request_error = Some(format!("Could not read selected tags: {error}")),
+                }
+                continue;
+            }
+
+            if field_name != "files" || filename.is_none() {
+                let mut drain_error = None;
+                while let Some(chunk) = match field.chunk().await {
+                    Ok(chunk) => chunk,
+                    Err(error) => {
+                        drain_error = Some(error.to_string());
+                        None
+                    }
+                } {
+                    let _ = chunk;
+                }
+                request_error.get_or_insert_with(|| {
+                    format!("Unexpected multipart field {field_name:?}.")
+                });
+                if let Some(error) = drain_error {
+                    request_error.get_or_insert_with(|| format!("Upload stream error: {error}"));
+                    break;
+                }
+                continue;
+            }
+            let filename = filename.unwrap_or_else(|| "unnamed_file".to_string());
 
             // Stage the upload in a temp file, preserving the original extension.
             let ext = std::path::Path::new(&filename)
@@ -612,12 +754,20 @@ async fn upload_handler(
                 Ok(file) => file,
                 Err(err) => {
                     eprintln!("Error creating temp file for {filename}: {err}");
-                    yield Ok(feed_event(
-                        upload::media_error_card(&filename, &format!("Could not stage file: {err}"))
-                            .into_string(),
-                    ));
-                    processed_count += 1;
-                    yield Ok(progress_event(processed_count, true));
+                    loop {
+                        match field.chunk().await {
+                            Ok(Some(_)) => {}
+                            Ok(None) => break,
+                            Err(error) => {
+                                request_error = Some(format!("Upload stream error: {error}"));
+                                break;
+                            }
+                        }
+                    }
+                    staged_uploads.push(StagedUpload::Failed {
+                        filename,
+                        reason: format!("Could not stage file: {err}"),
+                    });
                     continue;
                 }
             };
@@ -643,62 +793,100 @@ async fn upload_handler(
             }
             if let Some(reason) = read_error {
                 eprintln!("Error staging {filename}: {reason}");
-                yield Ok(feed_event(upload::media_error_card(&filename, &reason).into_string()));
-                processed_count += 1;
-                yield Ok(progress_event(processed_count, true));
+                staged_uploads.push(StagedUpload::Failed {
+                    filename,
+                    reason,
+                });
                 continue;
             }
+            staged_uploads.push(StagedUpload::File {
+                filename,
+                content_type,
+                file_size,
+                temp_file,
+            });
+        }
 
-            let temp_path = temp_file.path().to_path_buf();
-            let repo = state.repo.clone();
-            let dest_root = state.assets_dir.clone();
-
-            let result = tokio::task::spawn_blocking(move || {
-                create_media_from_file_in(temp_path, dest_root.as_path(), repo.as_ref())
-            })
-            .await;
-
-            let (card, failed) = match result {
-                Ok(Ok(CreateMediaOutcome::Created(media))) => (
-                    upload::media_processed_card(
-                        &filename,
-                        media.id.as_str(),
-                        "PROCESSED",
-                        file_size,
-                        content_type.as_deref().or(media.mime_type.as_deref()),
-                        false,
-                    ),
-                    false,
-                ),
-                Ok(Ok(CreateMediaOutcome::Duplicate(id))) => (
-                    upload::media_processed_card(
-                        &filename,
-                        id.as_str(),
-                        "DUPLICATE",
-                        file_size,
-                        content_type.as_deref(),
-                        true,
-                    ),
-                    false,
-                ),
-                Ok(Err(err)) => {
-                    eprintln!("Error creating media from file {filename}: {err}");
-                    (upload::media_error_card(&filename, &err.to_string()), true)
+        if let Some(error) = request_error {
+            eprintln!("Rejected malformed upload request: {error}");
+            yield Ok(feed_event(upload::media_error_card("(upload)", &error).into_string()));
+            yield Ok(PatchSignals::new("{errored: true}").into());
+        } else {
+            let mut processed_count = 0usize;
+            for staged in staged_uploads {
+            let (card, failed) = match staged {
+                StagedUpload::Failed { filename, reason } => {
+                    (upload::media_error_card(&filename, &reason), true)
                 }
-                Err(join_err) => {
-                    eprintln!("Join error while creating media: {join_err}");
-                    (
-                        upload::media_error_card(&filename, &format!("Processing failed: {join_err}")),
-                        true,
-                    )
+                StagedUpload::File {
+                    filename,
+                    content_type,
+                    file_size,
+                    temp_file,
+                } => {
+                    let temp_path = temp_file.path().to_path_buf();
+                    let repo = state.repo.clone();
+                    let dest_root = state.assets_dir.clone();
+                    let selected_tags = tag_pairs.clone();
+                    let result = tokio::task::spawn_blocking(move || {
+                        let result = create_media_from_file_in_with_tags(
+                            temp_path,
+                            dest_root.as_path(),
+                            &selected_tags,
+                            repo.as_ref(),
+                        );
+                        drop(temp_file);
+                        result
+                    })
+                    .await;
+
+                    match result {
+                        Ok(Ok(CreateMediaOutcome::Created(media))) => (
+                            upload::media_processed_card(
+                                &filename,
+                                media.id.as_str(),
+                                "PROCESSED",
+                                file_size,
+                                content_type.as_deref().or(media.mime_type.as_deref()),
+                                false,
+                                &tag_pairs,
+                            ),
+                            false,
+                        ),
+                        Ok(Ok(CreateMediaOutcome::Duplicate(id))) => (
+                            upload::media_processed_card(
+                                &filename,
+                                id.as_str(),
+                                "DUPLICATE",
+                                file_size,
+                                content_type.as_deref(),
+                                true,
+                                &tag_pairs,
+                            ),
+                            false,
+                        ),
+                        Ok(Err(err)) => {
+                            eprintln!("Error creating media from file {filename}: {err}");
+                            (upload::media_error_card(&filename, &err.to_string()), true)
+                        }
+                        Err(join_err) => {
+                            eprintln!("Join error while creating media: {join_err}");
+                            (
+                                upload::media_error_card(
+                                    &filename,
+                                    &format!("Processing failed: {join_err}"),
+                                ),
+                                true,
+                            )
+                        }
+                    }
                 }
             };
 
-            yield Ok(feed_event(card.into_string()));
-
-            // Progress: one count per field outcome (created, duplicate, or failed).
-            processed_count += 1;
-            yield Ok(progress_event(processed_count, failed));
+                yield Ok(feed_event(card.into_string()));
+                processed_count += 1;
+                yield Ok(progress_event(processed_count, failed));
+            }
         }
     };
 
@@ -938,12 +1126,12 @@ mod tests {
     };
     use recondo_dal::media::RedbMediaRepository;
     use recondo_domain::cmd::{CreateMediaOutcome, add_tag_to_media, create_media_from_file_in};
-    use recondo_domain::model::Tag;
+    use recondo_domain::model::{MediaId, Tag};
     use recondo_domain::repository::MediaRepository;
     use redb::Database;
     use tower::ServiceExt;
 
-    use super::{AppState, router};
+    use super::{AppState, parse_upload_tag_pair, router};
 
     /// Builds an `AppState` backed by a single temp dir (redb database +
     /// `assets/` subdir). The `TempDir` is returned so tests can keep it
@@ -1032,8 +1220,59 @@ mod tests {
         assert!(html.contains("data-on:drop__prevent"));
         assert!(!html.contains("data-on:dragover:prevent"));
         assert!(!html.contains("data-on:drop:prevent"));
+        assert!(html.contains("upload-tagging"));
+        assert!(html.contains("selected-upload-tags"));
+        assert!(html.contains("Add pair"));
+        assert!(html.contains("Clear uploaded list"));
+        assert!(html.contains("/upload.js"));
         // The placeholder is removed client-side on upload start.
         assert!(html.contains("feed-placeholder"));
+    }
+
+    #[test]
+    fn upload_tag_pair_parser_requires_a_complete_pair() {
+        assert_eq!(
+            parse_upload_tag_pair("relationship=to+do&tag=needs+tags").unwrap(),
+            ("to do".to_string(), "needs tags".to_string())
+        );
+        assert!(parse_upload_tag_pair("relationship=to+do").is_err());
+        assert!(parse_upload_tag_pair("tag=needs+tags").is_err());
+        assert!(parse_upload_tag_pair("relationship=+&tag=+").is_err());
+    }
+
+    #[tokio::test]
+    async fn upload_relationship_picker_reuses_live_relationship_and_tag_queries() {
+        let (state, temp) = test_app_state();
+        seed_explore_relationships(&state, &temp);
+        let search = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/upload/relationship-search?prefix=to")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let search_body = to_bytes(search.into_body(), usize::MAX).await.unwrap();
+        let search_html = String::from_utf8(search_body.to_vec()).unwrap();
+        assert!(search_html.contains("to do"));
+
+        let relationship = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/upload/relationship?name=to%20do")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let relationship_body = to_bytes(relationship.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let relationship_html = String::from_utf8(relationship_body.to_vec()).unwrap();
+        assert!(relationship_html.contains("needs tags"));
+        assert!(relationship_html.contains("window.addUploadTagPair"));
+        assert!(relationship_html.contains("data-relationship=\"to do\""));
     }
 
     #[tokio::test]
@@ -1564,6 +1803,95 @@ mod tests {
         assert_eq!(
             copied_count, 2,
             "duplicate upload must not create an extra file"
+        );
+    }
+
+    #[tokio::test]
+    async fn upload_handler_persists_selected_pairs_for_new_and_duplicate_media() {
+        let (state, _temp) = test_app_state();
+        let boundary = "---------------------------tagged-upload";
+        let content = "media with upload tags";
+        let make_body = |relationship: &str, tag: &str| {
+            let pair = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("relationship", relationship)
+                .append_pair("tag", tag)
+                .finish();
+            format!(
+                "--{boundary}\r\n\
+                 Content-Disposition: form-data; name=\"tag_pair\"\r\n\r\n\
+                 {pair}\r\n\
+                 --{boundary}\r\n\
+                 Content-Disposition: form-data; name=\"files\"; filename=\"tagged.txt\"\r\n\
+                 Content-Type: text/plain\r\n\r\n\
+                 {content}\r\n\
+                 --{boundary}--\r\n"
+            )
+        };
+        let upload = |state: AppState, body: String| async move {
+            router(state)
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/upload")
+                        .header(
+                            header::CONTENT_TYPE,
+                            format!("multipart/form-data; boundary={boundary}"),
+                        )
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        };
+
+        let created_response = upload(state.clone(), make_body("Trip Plan", "Coast Drive")).await;
+        let created_body = to_bytes(created_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let created_html = String::from_utf8(created_body.to_vec()).unwrap();
+        assert!(created_html.contains("#coast drive · trip plan"));
+
+        let first_tag = Tag::new("coast drive").unwrap();
+        let first_tag_edges = recondo_domain::get_tag_adj_list(first_tag.id(), state.repo.as_ref())
+            .unwrap()
+            .unwrap();
+        let media_id = MediaId::from_hash(first_tag_edges[0].1.clone()).unwrap();
+        let first_edges = state.repo.get_media_adj_list(&media_id).unwrap().unwrap();
+        assert_eq!(
+            first_edges,
+            vec![("trip plan".to_string(), first_tag.id().to_string())]
+        );
+        let default_tag = Tag::new("needs tags").unwrap();
+        assert!(
+            !recondo_domain::get_tag_adj_list(default_tag.id(), state.repo.as_ref())
+                .unwrap()
+                .unwrap_or_default()
+                .iter()
+                .any(|(_, id)| id == media_id.as_str())
+        );
+
+        let duplicate_response = upload(state.clone(), make_body("occasion", "birthday")).await;
+        let duplicate_body = to_bytes(duplicate_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let duplicate_html = String::from_utf8(duplicate_body.to_vec()).unwrap();
+        assert!(duplicate_html.contains("DUPLICATE"));
+
+        let second_tag = Tag::new("birthday").unwrap();
+        let updated_edges = state.repo.get_media_adj_list(&media_id).unwrap().unwrap();
+        assert_eq!(
+            updated_edges,
+            vec![
+                ("trip plan".to_string(), first_tag.id().to_string()),
+                ("occasion".to_string(), second_tag.id().to_string()),
+            ]
+        );
+        assert!(
+            !recondo_domain::get_tag_adj_list(default_tag.id(), state.repo.as_ref())
+                .unwrap()
+                .unwrap_or_default()
+                .iter()
+                .any(|(_, id)| id == media_id.as_str())
         );
     }
 

@@ -100,6 +100,53 @@ test('file-input selection uploads and clears the input afterwards', async ({ pa
   await expect(page.locator('#file-input')).toHaveValue('');
 });
 
+test('selects and creates upload tag pairs, applies them to every file, and clears the feed', async ({
+  page,
+}) => {
+  const seed = scratchFile('tag-seed.txt', `tag picker seed ${randomBytes(8).toString('hex')}`);
+  await page.locator('#file-input').setInputFiles(seed);
+  await expect(page.locator('#upload-status')).toContainText('Upload complete');
+  await page.getByRole('button', { name: 'Clear uploaded list' }).click();
+  await expect(page.locator('#feed-placeholder')).toBeVisible();
+  await expect(page.locator('.processed-card')).toHaveCount(0);
+
+  const relationshipSearch = page.getByRole('searchbox', {
+    name: 'FIND AN EXISTING RELATIONSHIP',
+  });
+  await relationshipSearch.fill('to');
+  await page.getByRole('button', { name: 'to do' }).click();
+  await page.getByRole('button', { name: 'needs tags' }).click();
+  await expect(page.locator('.selected-upload-tag')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Remove needs tags under to do' }).click();
+  await expect(page.locator('.selected-upload-tag')).toHaveCount(0);
+
+  await page.getByLabel('Relationship', { exact: true }).fill('occasion');
+  await page.getByLabel('Tag', { exact: true }).fill('birthday');
+  await page.getByRole('button', { name: 'Add pair' }).click();
+  await expect(page.locator('.selected-upload-tag')).toContainText('#birthday · occasion');
+
+  const files = [
+    scratchFile('tagged-one.txt', `first tagged file ${randomBytes(8).toString('hex')}`),
+    scratchFile('tagged-two.txt', `second tagged file ${randomBytes(8).toString('hex')}`),
+  ];
+  await page.locator('#file-input').setInputFiles(files);
+  await expect(page.locator('#upload-status')).toContainText('Upload complete');
+  await expect(page.locator('.processed-card')).toHaveCount(2);
+  await expect(page.locator('.processed-tags')).toHaveText([
+    '#birthday · occasion',
+    '#birthday · occasion',
+  ]);
+
+  await page.getByRole('button', { name: 'Clear uploaded list' }).click();
+  await expect(page.locator('.processed-card')).toHaveCount(0);
+  await expect(page.locator('#feed-placeholder')).toBeVisible();
+
+  await page.goto('/explore');
+  await page.getByRole('searchbox').fill('occasion');
+  await page.getByRole('button', { name: 'occasion' }).click();
+  await expect(page.getByRole('link', { name: 'birthday' })).toBeVisible();
+});
+
 test('duplicate content is marked as a duplicate, not an error', async ({ page }) => {
   const file = scratchFile('dup.txt', `duplicate test ${randomBytes(8).toString('hex')}`);
 

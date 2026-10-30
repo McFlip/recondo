@@ -124,10 +124,7 @@ impl Tag {
     }
 
     /// Checks whether this tag already exists in the repository's tag adjacency list.
-    pub fn check<R: crate::repository::TagRepository>(
-        &self,
-        repo: &R,
-    ) -> Result<bool, R::Error> {
+    pub fn check<R: crate::repository::TagRepository>(&self, repo: &R) -> Result<bool, R::Error> {
         repo.tag_exists(self.id())
     }
 }
@@ -179,7 +176,11 @@ impl Edge {
         if tag.is_empty() {
             return Err(EdgeError::EmptyTag);
         }
-        Ok(Self { relationship, media, tag })
+        Ok(Self {
+            relationship,
+            media,
+            tag,
+        })
     }
 }
 

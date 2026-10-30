@@ -14,6 +14,7 @@ use url;
 pub enum CreateMediaError<E> {
     Io(std::io::Error),
     MediaId(model::MediaIdError),
+    Relationship(model::RelationshipError),
     Url(url::ParseError),
     Repository(E),
     Tag(Box<dyn StdError + Send + Sync + 'static>),
@@ -24,6 +25,7 @@ impl<E: fmt::Display> fmt::Display for CreateMediaError<E> {
         match self {
             Self::Io(e) => write!(f, "io error: {}", e),
             Self::MediaId(e) => write!(f, "media id error: {}", e),
+            Self::Relationship(e) => write!(f, "relationship error: {}", e),
             Self::Url(e) => write!(f, "url parse error: {}", e),
             Self::Repository(e) => write!(f, "repository error: {}", e),
             Self::Tag(e) => write!(f, "tag error: {}", e),
@@ -36,6 +38,7 @@ impl<E: StdError + 'static> StdError for CreateMediaError<E> {
         match self {
             Self::Io(e) => Some(e),
             Self::MediaId(e) => Some(e),
+            Self::Relationship(e) => Some(e),
             Self::Url(e) => Some(e),
             Self::Repository(e) => Some(e),
             Self::Tag(e) => Some(e.as_ref()),
@@ -69,6 +72,43 @@ pub fn create_media_from_file_in<R: MediaRepository>(
     dest_root: &Path,
     repo: &R,
 ) -> Result<CreateMediaOutcome, CreateMediaError<R::Error>> {
+    create_media_from_file_in_with_assignments(src_path, dest_root, repo, None)
+}
+
+/// Creates media while attaching the selected relationship/tag pairs instead
+/// of the default `needs tags` upload pair. For duplicate media, selected
+/// pairs are added to existing tags, replacing the default only when it is
+/// the duplicate's sole pair.
+pub fn create_media_from_file_in_with_tags<R: MediaRepository>(
+    src_path: PathBuf,
+    dest_root: &Path,
+    tags: &[(String, String)],
+    repo: &R,
+) -> Result<CreateMediaOutcome, CreateMediaError<R::Error>> {
+    let mut assignments = Vec::with_capacity(tags.len());
+    for (relationship, tag_name) in tags {
+        let relationship =
+            model::new_relationship(relationship).map_err(CreateMediaError::Relationship)?;
+        let tag = model::Tag::new(tag_name).map_err(|error| {
+            CreateMediaError::Tag(Box::new(error) as Box<dyn StdError + Send + Sync>)
+        })?;
+        if !assignments.iter().any(
+            |(existing_relationship, existing_tag): &(String, model::Tag)| {
+                existing_relationship == &relationship && existing_tag == &tag
+            },
+        ) {
+            assignments.push((relationship, tag));
+        }
+    }
+    create_media_from_file_in_with_assignments(src_path, dest_root, repo, Some(&assignments))
+}
+
+fn create_media_from_file_in_with_assignments<R: MediaRepository>(
+    src_path: PathBuf,
+    dest_root: &Path,
+    repo: &R,
+    tags: Option<&[(String, model::Tag)]>,
+) -> Result<CreateMediaOutcome, CreateMediaError<R::Error>> {
     let mut file = fs::File::open(&src_path).map_err(CreateMediaError::Io)?;
     let file_size = file.metadata().map_err(CreateMediaError::Io)?.len();
     let mime_type = infer::get_from_path(&src_path)
@@ -89,6 +129,10 @@ pub fn create_media_from_file_in<R: MediaRepository>(
         .media_exists(&id)
         .map_err(CreateMediaError::Repository)?
     {
+        if let Some(tags) = tags.filter(|tags| !tags.is_empty()) {
+            repo.apply_upload_tags_to_duplicate(&id, tags)
+                .map_err(CreateMediaError::Repository)?;
+        }
         return Ok(CreateMediaOutcome::Duplicate(id));
     }
     let file_ext = src_path.extension().unwrap_or(std::ffi::OsStr::new(""));
@@ -105,12 +149,15 @@ pub fn create_media_from_file_in<R: MediaRepository>(
             view_count: None,
         }),
     );
-    repo.save_media(&media, &src_path, &dest_path)
-        .map_err(|e| match e {
-            SaveMediaError::Io(io) => CreateMediaError::Io(io),
-            SaveMediaError::Repository(r) => CreateMediaError::Repository(r),
-            SaveMediaError::Tag(t) => CreateMediaError::Tag(t),
-        })?;
+    let save_result = match tags.filter(|tags| !tags.is_empty()) {
+        Some(tags) => repo.save_media_with_tags(&media, &src_path, &dest_path, tags),
+        None => repo.save_media(&media, &src_path, &dest_path),
+    };
+    save_result.map_err(|e| match e {
+        SaveMediaError::Io(io) => CreateMediaError::Io(io),
+        SaveMediaError::Repository(r) => CreateMediaError::Repository(r),
+        SaveMediaError::Tag(t) => CreateMediaError::Tag(t),
+    })?;
 
     Ok(CreateMediaOutcome::Created(media))
 }
@@ -236,6 +283,28 @@ mod tests {
         ) -> Result<(), SaveMediaError<Self::Error>> {
             if self.error.is_some() {
                 Err(SaveMediaError::Repository(StubError))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn save_media_with_tags(
+            &self,
+            _media: &model::Media,
+            _src_path: &std::path::Path,
+            _dest_path: &std::path::Path,
+            _tags: &[(String, model::Tag)],
+        ) -> Result<(), SaveMediaError<Self::Error>> {
+            self.save_media(_media, _src_path, _dest_path)
+        }
+
+        fn apply_upload_tags_to_duplicate(
+            &self,
+            _media_id: &model::MediaId,
+            _tags: &[(String, model::Tag)],
+        ) -> Result<(), Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
             } else {
                 Ok(())
             }

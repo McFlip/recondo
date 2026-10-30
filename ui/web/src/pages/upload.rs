@@ -1,4 +1,5 @@
 use maud::{Markup, html};
+use recondo_domain::model::Tag;
 
 use crate::layout;
 
@@ -11,7 +12,7 @@ pub fn render() -> Markup {
                     p class="eyebrow" { "Media Ingestion" }
                     h1 { "Upload " em { "media files." } }
                     p class="section-description" {
-                        "Select or drag multiple files into Recondo. Each file is verified, indexed into the graph, and tagged for processing."
+                        "Choose relationship/tag pairs, then select or drag files. Every pair applies to each file in this upload."
                     }
                 }
 
@@ -19,7 +20,7 @@ pub fn render() -> Markup {
                     form id="upload-form"
                         class="upload-form"
                         enctype="multipart/form-data"
-                        data-signals="{ dragging: false, uploading: false, errored: false, totalFiles: 0, processedCount: 0 }"
+                        data-signals="{ dragging: false, uploading: false, errored: false, totalFiles: 0, processedCount: 0, relationshipquery: '' }"
                         data-on:datastar-fetch="
                             if (evt.detail.type === 'started') {
                                 $errored = false;
@@ -35,6 +36,84 @@ pub fn render() -> Markup {
                                 $errored = true;
                             }
                         " {
+                        section class="upload-tagging" aria-label="Tags for uploaded media" {
+                            div class="upload-tagging-heading" {
+                                div {
+                                    p class="eyebrow" { "TAG YOUR UPLOAD" }
+                                    h2 { "Choose connections" }
+                                    p class="processed-hint" {
+                                        "Selected pairs apply to every file. Leave this empty to keep the default “needs tags” pair."
+                                    }
+                                }
+                                script type="module" src="/upload.js" {}
+                            }
+
+                            div class="selected-upload-tags-section" {
+                                p class="media-control-label" { "SELECTED TAGS" }
+                                div id="selected-upload-tags" class="selected-upload-tags" aria-live="polite" {
+                                    p id="upload-tag-empty" class="media-muted" {
+                                        "No additional tags selected."
+                                    }
+                                }
+                                p id="upload-tag-error" class="explore-error" role="alert" {}
+                            }
+
+                            div class="upload-tag-picker" {
+                                div class="upload-existing-tag-picker" {
+                                    label for="upload-relationship-query" class="explore-search-label" {
+                                        "FIND AN EXISTING RELATIONSHIP"
+                                    }
+                                    input
+                                        id="upload-relationship-query"
+                                        class="upload-relationship-query"
+                                        type="search"
+                                        placeholder="Try “place” or “to do”"
+                                        autocomplete="off"
+                                        aria-controls="upload-relationship-suggestions"
+                                        data-bind:relationshipquery=""
+                                        data-on:input="@get('/upload/relationship-search?prefix='+encodeURIComponent($relationshipquery))";
+                                    div
+                                        id="upload-relationship-suggestions"
+                                        class="upload-relationship-suggestions"
+                                        role="status"
+                                        aria-live="polite" {
+                                        p class="explore-hint" { "Search for a relationship to see its tags." }
+                                    }
+                                    div
+                                        id="upload-relationship-details"
+                                        class="upload-relationship-details"
+                                        aria-live="polite" {
+                                        p class="explore-hint" { "Choose a relationship to add one of its tags." }
+                                    }
+                                }
+
+                                fieldset class="new-upload-tag-pair" {
+                                    legend { "Create a relationship and tag" }
+                                    p class="processed-hint" {
+                                        "Both fields are required; a relationship and tag are always added together."
+                                    }
+                                    label for="new-upload-relationship" { "Relationship" }
+                                    input
+                                        id="new-upload-relationship"
+                                        type="text"
+                                        placeholder="e.g. location"
+                                        autocomplete="off";
+                                    label for="new-upload-tag" { "Tag" }
+                                    input
+                                        id="new-upload-tag"
+                                        type="text"
+                                        placeholder="e.g. kitchen"
+                                        autocomplete="off";
+                                    button
+                                        type="button"
+                                        class="operation-button upload-add-tag"
+                                        data-on:click="window.addUploadTagPair(document.getElementById('new-upload-relationship').value, document.getElementById('new-upload-tag').value)" {
+                                        "Add pair"
+                                    }
+                                }
+                            }
+                        }
+
                         div id="dropzone"
                             class="upload-dropzone"
                             data-class:is-dragging="$dragging"
@@ -97,8 +176,16 @@ pub fn render() -> Markup {
 
                     div class="processed-section" {
                         div class="processed-heading" {
-                            h2 { "Processed Media" }
-                            p class="processed-hint" { "Media items will appear here in real-time as they are processed." }
+                            div {
+                                h2 { "Processed Media" }
+                                p class="processed-hint" { "Media items will appear here in real-time as they are processed." }
+                            }
+                            button
+                                type="button"
+                                class="clear-upload-list"
+                                data-on:click="window.clearProcessedUploads()" {
+                                "Clear uploaded list"
+                            }
                         }
                         div id="processed-feed" class="processed-feed" {
                             p id="feed-placeholder" class="feed-placeholder" { "No files uploaded yet. Select files above to begin." }
@@ -108,6 +195,78 @@ pub fn render() -> Markup {
             }
         },
     )
+}
+
+pub fn relationship_suggestions(prefix: &str, relationships: &[String]) -> Markup {
+    html! {
+        div id="upload-relationship-suggestions" class="upload-relationship-suggestions" role="status" aria-live="polite" {
+            @if prefix.trim().is_empty() {
+                p class="explore-hint" { "Search for a relationship to see its tags." }
+            } @else if relationships.is_empty() {
+                p class="explore-hint" { "No relationships match “" (prefix) "”." }
+            } @else {
+                p class="suggestion-count" {
+                    "RELATIONSHIPS"
+                    span { (relationships.len()) }
+                }
+                ul class="relationship-option-list" {
+                    @for relationship in relationships {
+                        li {
+                            button
+                                type="button"
+                                class="relationship-option"
+                                data-relationship=(relationship)
+                                data-on:click="@get('/upload/relationship?name='+encodeURIComponent(el.dataset.relationship))" {
+                                span { (relationship) }
+                                span class="relationship-option-arrow" aria-hidden="true" { "↗" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn relationship_tags(relationship: &str, tags: &[Tag]) -> Markup {
+    html! {
+        div id="upload-relationship-details" class="upload-relationship-details" aria-live="polite" {
+            @if tags.is_empty() {
+                p class="explore-hint" { "This relationship has no tags yet. Create a relationship/tag pair below." }
+            } @else {
+                p class="media-control-label" { "TAGS IN " (relationship) }
+                div class="upload-relationship-tag-list" {
+                    @for tag in tags {
+                        button
+                            type="button"
+                            class="relationship-tag-card upload-existing-tag"
+                            data-relationship=(relationship)
+                            data-tag=(tag.name())
+                            data-on:click="window.addUploadTagPair(el.dataset.relationship, el.dataset.tag)" {
+                            span class="relationship-tag-mark" aria-hidden="true" { "+" }
+                            strong { (tag.name()) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn relationship_error(message: &str) -> Markup {
+    html! {
+        div id="upload-relationship-suggestions" class="upload-relationship-suggestions" role="status" aria-live="polite" {
+            p class="explore-error" { (message) }
+        }
+    }
+}
+
+pub fn relationship_tags_error(message: &str) -> Markup {
+    html! {
+        div id="upload-relationship-details" class="upload-relationship-details" aria-live="polite" {
+            p class="explore-error" { (message) }
+        }
+    }
 }
 
 /// Failure card for the processed-media feed: one per file (or stream) that
@@ -134,6 +293,7 @@ pub fn media_processed_card(
     file_size: u64,
     mime_type: Option<&str>,
     is_duplicate: bool,
+    tag_pairs: &[(String, String)],
 ) -> Markup {
     let size_display = if file_size < 1024 {
         format!("{file_size} B")
@@ -182,8 +342,14 @@ pub fn media_processed_card(
                     }
                 }
                 div class="processed-tags" {
-                    span class="tag-chip" { "#needs tags" }
-                    span class="tag-chip" { "#to do" }
+                    @if tag_pairs.is_empty() {
+                        span class="tag-chip" { "#needs tags" }
+                        span class="tag-chip" { "#to do" }
+                    } @else {
+                        @for (relationship, tag) in tag_pairs {
+                            span class="tag-chip" { "#" (tag) " · " (relationship) }
+                        }
+                    }
                 }
             }
         }

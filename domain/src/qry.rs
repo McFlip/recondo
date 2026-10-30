@@ -561,6 +561,28 @@ mod tests {
             Ok(())
         }
 
+        fn save_media_with_tags(
+            &self,
+            media: &Media,
+            src_path: &Path,
+            dest_path: &Path,
+            _tags: &[(String, Tag)],
+        ) -> Result<(), SaveMediaError<Self::Error>> {
+            self.save_media(media, src_path, dest_path)
+        }
+
+        fn apply_upload_tags_to_duplicate(
+            &self,
+            _media_id: &MediaId,
+            _tags: &[(String, Tag)],
+        ) -> Result<(), Self::Error> {
+            if self.should_fail {
+                Err(MockError)
+            } else {
+                Ok(())
+            }
+        }
+
         fn save_media_record(&self, media: &Media) -> Result<(), Self::Error> {
             if self.should_fail {
                 return Err(MockError);

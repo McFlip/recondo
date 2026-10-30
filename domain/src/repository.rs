@@ -11,6 +11,18 @@ pub trait MediaRepository {
         src_path: &Path,
         dest_path: &Path,
     ) -> Result<(), SaveMediaError<Self::Error>>;
+    fn save_media_with_tags(
+        &self,
+        media: &Media,
+        src_path: &Path,
+        dest_path: &Path,
+        tags: &[(String, Tag)],
+    ) -> Result<(), SaveMediaError<Self::Error>>;
+    fn apply_upload_tags_to_duplicate(
+        &self,
+        media_id: &MediaId,
+        tags: &[(String, Tag)],
+    ) -> Result<(), Self::Error>;
     fn save_media_record(&self, media: &Media) -> Result<(), Self::Error>;
     fn get_media(&self, id: &MediaId) -> Result<Option<Media>, Self::Error>;
     fn get_media_adj_list(
@@ -29,19 +41,14 @@ pub trait TagRepository {
         tag: &Tag,
         relationship: &str,
     ) -> Result<(), Self::Error>;
-    fn get_tag_adj_list(
-        &self,
-        tag_id: &str,
-    ) -> Result<Option<Vec<(String, String)>>, Self::Error>;
+    fn get_tag_adj_list(&self, tag_id: &str) -> Result<Option<Vec<(String, String)>>, Self::Error>;
     fn get_relationships_by_prefix(
         &self,
         prefix: &str,
         limit: Option<usize>,
     ) -> Result<Option<Vec<String>>, Self::Error>;
-    fn get_tags_by_relationship(
-        &self,
-        relationship: &str,
-    ) -> Result<Option<Vec<Tag>>, Self::Error>;
+    fn get_tags_by_relationship(&self, relationship: &str)
+    -> Result<Option<Vec<Tag>>, Self::Error>;
 }
 
 #[derive(Debug)]
