@@ -100,7 +100,7 @@ pub fn relationship_tags(relationship: &str, tags: &[Tag]) -> Markup {
                 } @else {
                     div class="relationship-tag-grid" {
                         @for tag in tags {
-                            article class="relationship-tag-card" {
+                            a class="relationship-tag-card" href=(media_tag_href(tag.id())) {
                                 span class="relationship-tag-mark" aria-hidden="true" { "#" }
                                 strong { (tag.name()) }
                             }
@@ -110,6 +110,14 @@ pub fn relationship_tags(relationship: &str, tags: &[Tag]) -> Markup {
             }
         }
     }
+}
+
+fn media_tag_href(tag_id: &str) -> String {
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("tag", tag_id)
+        .append_pair("limit", "10")
+        .finish();
+    format!("/media?{query}")
 }
 
 pub fn selection_message(message: &str) -> Markup {

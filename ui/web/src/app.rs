@@ -6,9 +6,9 @@ use std::sync::Arc;
 use async_stream::stream;
 use axum::{
     Router,
-    body::Body,
-    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
-    http::{StatusCode, header},
+    body::{Body, Bytes},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, RawQuery, State},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response, Sse},
     routing::{get, post},
 };
@@ -18,12 +18,18 @@ use datastar::{
 };
 use recondo_dal::media::RedbMediaRepository;
 use recondo_domain::cmd::{CreateMediaOutcome, create_media_from_file_in};
-use recondo_domain::model::normalize_relationship;
-use recondo_domain::{get_relationships_by_prefix, get_tags_by_relationship};
+use recondo_domain::model::{MediaId, Tag, normalize_relationship};
+use recondo_domain::repository::{MediaRepository, TagRepository};
+use recondo_domain::{
+    get_enriched_media_by_logical_and, get_relationships_by_prefix, get_tag_adj_list,
+    get_tags_by_relationship,
+};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio_stream::iter;
 
 use crate::pages::explore;
 use crate::pages::landing::{self, DemoFilter};
+use crate::pages::media;
 use crate::pages::upload;
 
 #[derive(Clone)]
@@ -39,6 +45,8 @@ pub fn router(state: AppState) -> Router {
         .route("/explore/search", get(search_relationships))
         .route("/explore/relationship", get(show_relationship))
         .route("/explore/submit", get(submit_relationship_search))
+        .route("/media", get(media_page))
+        .route("/asset/{id}", get(media_asset_by_id))
         .route("/upload", get(upload_page))
         .route("/upload", post(upload_handler))
         .route("/demo/{filter}", get(filter_demo))
@@ -78,6 +86,127 @@ async fn upload_page() -> maud::Markup {
 
 async fn explore_page() -> maud::Markup {
     explore::render()
+}
+
+async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery) -> maud::Markup {
+    let params = parse_media_query(raw_query.as_deref().unwrap_or_default());
+    let repo = state.repo;
+
+    if params.tag_ids.is_empty() {
+        return media::render(
+            &[],
+            params.limit,
+            None,
+            None,
+            "Select a tag from Explore to find connected media.",
+        );
+    }
+
+    let placeholder_tags = params
+        .tag_ids
+        .iter()
+        .map(|id| Tag::from_parts(id.clone(), format!("Unknown tag {}", short_id(id))))
+        .collect::<Vec<_>>();
+    let tag_ids = params.tag_ids.clone();
+    let limit = params.limit;
+    let result = tokio::task::spawn_blocking(move || {
+        let query = get_enriched_media_by_logical_and(&tag_ids, limit, repo.as_ref())
+            .map_err(|error| error.to_string())?;
+        let selected_tags = selected_tag_labels(&tag_ids, repo.as_ref())?;
+        Ok::<_, String>((query, selected_tags))
+    })
+    .await;
+
+    match result {
+        Ok(Ok((query, selected_tags))) => {
+            media::render(&selected_tags, params.limit, Some(&query), None, "")
+        }
+        Ok(Err(error)) => {
+            eprintln!("Error querying media for selected tags: {error}");
+            media::render(
+                &placeholder_tags,
+                params.limit,
+                None,
+                Some(&error),
+                "The media search could not be completed.",
+            )
+        }
+        Err(error) => {
+            eprintln!("Media query task failed: {error}");
+            media::render(
+                &placeholder_tags,
+                params.limit,
+                None,
+                Some(&error.to_string()),
+                "The media search could not be completed.",
+            )
+        }
+    }
+}
+
+struct MediaQueryParams {
+    tag_ids: Vec<String>,
+    limit: usize,
+}
+
+fn parse_media_query(query: &str) -> MediaQueryParams {
+    let mut tag_ids = Vec::new();
+    let mut limit = media::DEFAULT_LIMIT;
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "tag" if !value.is_empty() => {
+                let id = value.into_owned();
+                if !tag_ids.contains(&id) {
+                    tag_ids.push(id);
+                }
+            }
+            "limit" => {
+                limit = if value == "unlimited" {
+                    usize::MAX
+                } else {
+                    value
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|value| media::LIMIT_OPTIONS.contains(value))
+                        .unwrap_or(media::DEFAULT_LIMIT)
+                };
+            }
+            _ => {}
+        }
+    }
+    MediaQueryParams { tag_ids, limit }
+}
+
+fn selected_tag_labels<R>(tag_ids: &[String], repo: &R) -> Result<Vec<Tag>, String>
+where
+    R: MediaRepository + TagRepository,
+    <R as TagRepository>::Error: std::fmt::Display,
+{
+    let mut selected_tags = Vec::with_capacity(tag_ids.len());
+    for tag_id in tag_ids {
+        let mut name = None;
+        let relationships = get_tag_adj_list(tag_id, repo)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        for (relationship, _) in relationships {
+            let tags = get_tags_by_relationship(&relationship, repo)
+                .map_err(|error| error.to_string())?
+                .unwrap_or_default();
+            if let Some(tag) = tags.into_iter().find(|tag| tag.id() == tag_id) {
+                name = Some(tag.name().to_string());
+                break;
+            }
+        }
+        selected_tags.push(Tag::from_parts(
+            tag_id.clone(),
+            name.unwrap_or_else(|| format!("Unknown tag {}", short_id(tag_id))),
+        ));
+    }
+    Ok(selected_tags)
+}
+
+fn short_id(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
 }
 
 fn patch_response(
@@ -406,6 +535,187 @@ async fn media_asset(Path(filename): Path<String>) -> Response {
         .into_response()
 }
 
+async fn media_asset_by_id(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let Ok(media_id) = MediaId::from_hash(id.clone()) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let repo = state.repo;
+    let media = match tokio::task::spawn_blocking(move || repo.get_media(&media_id)).await {
+        Ok(Ok(Some(media))) => media,
+        Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => {
+            eprintln!("Could not find media asset {id}: {error}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        Err(error) => {
+            eprintln!("Media asset lookup task failed for {id}: {error}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    let assets_dir = match tokio::fs::canonicalize(&state.assets_dir).await {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        Err(error) => {
+            eprintln!("Could not resolve assets directory: {error}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let media_filename = media
+        .url
+        .to_file_path()
+        .ok()
+        .and_then(|path| path.file_name().map(std::ffi::OsStr::to_os_string));
+    let Some(media_filename) = media_filename else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let media_path = match tokio::fs::canonicalize(assets_dir.join(media_filename)).await {
+        Ok(path)
+            if path.starts_with(&assets_dir)
+                && path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .is_some_and(|stem| stem == id) =>
+        {
+            path
+        }
+        Ok(_) => return StatusCode::NOT_FOUND.into_response(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        Err(error) => {
+            eprintln!("Could not resolve media asset {id}: {error}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let mut file = match tokio::fs::File::open(media_path).await {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!("Could not open media asset {id}: {error}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let file_size = match file.metadata().await {
+        Ok(metadata) => metadata.len(),
+        Err(error) => {
+            eprintln!("Could not inspect media asset {id}: {error}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let requested_range = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok());
+    let range = match requested_range {
+        Some(value) => match parse_byte_range(value, file_size) {
+            Ok(range) => range,
+            Err(()) => {
+                return Response::builder()
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header(header::CONTENT_RANGE, format!("bytes */{file_size}"))
+                    .body(Body::empty())
+                    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+            }
+        },
+        None => None,
+    };
+
+    let (start, content_length, status) = match range {
+        Some((start, end)) => (start, end - start + 1, StatusCode::PARTIAL_CONTENT),
+        None => (0, file_size, StatusCode::OK),
+    };
+    if start > 0
+        && let Err(error) = file.seek(SeekFrom::Start(start)).await
+    {
+        eprintln!("Could not seek media asset {id}: {error}");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
+    let content_type = media
+        .mime_type
+        .as_deref()
+        .unwrap_or("application/octet-stream");
+    let mut response = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, content_length);
+    if let Some((start, end)) = range {
+        response = response.header(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end}/{file_size}"),
+        );
+    }
+
+    let body_stream = stream! {
+        let mut remaining = content_length;
+        let mut buffer = vec![0u8; 64 * 1024];
+        while remaining > 0 {
+            let chunk_size = remaining.min(buffer.len() as u64) as usize;
+            let bytes_read = match file.read(&mut buffer[..chunk_size]).await {
+                Ok(bytes_read) => bytes_read,
+                Err(error) => {
+                    yield Err::<Bytes, std::io::Error>(error);
+                    break;
+                }
+            };
+            if bytes_read == 0 {
+                break;
+            }
+            remaining -= bytes_read as u64;
+            yield Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&buffer[..bytes_read]));
+        }
+    };
+    response
+        .body(Body::from_stream(body_stream))
+        .unwrap_or_else(|error| {
+            eprintln!("Could not build media response for {id}: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        })
+}
+
+fn parse_byte_range(value: &str, file_size: u64) -> Result<Option<(u64, u64)>, ()> {
+    let Some(value) = value.strip_prefix("bytes=") else {
+        return Ok(None);
+    };
+    if value.contains(',') {
+        return Ok(None);
+    }
+    let Some((start, end)) = value.split_once('-') else {
+        return Err(());
+    };
+
+    if start.is_empty() {
+        let suffix_length = end.parse::<u64>().map_err(|_| ())?;
+        if suffix_length == 0 || file_size == 0 {
+            return Err(());
+        }
+        return Ok(Some((
+            file_size.saturating_sub(suffix_length),
+            file_size - 1,
+        )));
+    }
+
+    let start = start.parse::<u64>().map_err(|_| ())?;
+    if start >= file_size {
+        return Err(());
+    }
+    let end = if end.is_empty() {
+        file_size - 1
+    } else {
+        end.parse::<u64>().map_err(|_| ())?.min(file_size - 1)
+    };
+    if end < start {
+        return Err(());
+    }
+    Ok(Some((start, end)))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -416,6 +726,7 @@ mod tests {
     };
     use recondo_dal::media::RedbMediaRepository;
     use recondo_domain::cmd::{CreateMediaOutcome, add_tag_to_media, create_media_from_file_in};
+    use recondo_domain::model::Tag;
     use recondo_domain::repository::MediaRepository;
     use redb::Database;
     use tower::ServiceExt;
@@ -439,7 +750,7 @@ mod tests {
         (state, temp_dir)
     }
 
-    fn seed_explore_relationships(state: &AppState, temp: &tempfile::TempDir) {
+    fn seed_explore_relationships(state: &AppState, temp: &tempfile::TempDir) -> String {
         let source = temp.path().join("explore-seed.txt");
         std::fs::write(&source, "explore relationship seed").unwrap();
         let media = match create_media_from_file_in(
@@ -452,6 +763,7 @@ mod tests {
             CreateMediaOutcome::Created(media) => media,
             CreateMediaOutcome::Duplicate(_) => panic!("test media should be unique"),
         };
+        let media_id = media.id.as_str().to_string();
 
         add_tag_to_media(
             media.id.as_str(),
@@ -461,6 +773,7 @@ mod tests {
         )
         .unwrap();
         add_tag_to_media(media.id.as_str(), "topic tag", "topic", state.repo.as_ref()).unwrap();
+        media_id
     }
 
     #[tokio::test]
@@ -670,6 +983,160 @@ mod tests {
         assert!(prefix_event.contains("<h2>to do</h2>"));
         assert!(prefix_event.contains("needs tags"));
         assert!(prefix_event.contains("field note"));
+    }
+
+    #[tokio::test]
+    async fn media_page_shows_selected_tags_related_groups_and_downloads() {
+        let (state, temp) = test_app_state();
+        seed_explore_relationships(&state, &temp);
+        let tag_id = Tag::new("field note").unwrap().id().to_string();
+        let other_tag_id = Tag::new("topic tag").unwrap().id().to_string();
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/media?tag={tag_id}&tag={other_tag_id}&limit=25"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(html.contains("field note"));
+        assert!(html.contains("topic tag"));
+        assert!(html.contains("needs tags"));
+        assert!(html.contains("DISPLAY LIMIT"));
+        assert!(html.contains("Other logical operations are not functional yet."));
+        assert!(html.contains(&format!("href=\"/media?tag={other_tag_id}&amp;limit=25\"")));
+        assert!(html.contains("Download file"));
+        assert!(html.contains("data-on:change"));
+    }
+
+    #[tokio::test]
+    async fn media_limit_shows_count_at_limit_and_items_under_limit() {
+        let (state, temp) = test_app_state();
+        let source = temp.path().join("media-limit.txt");
+        let mut first_id = String::new();
+        for index in 0..10 {
+            std::fs::write(&source, format!("media item {index}")).unwrap();
+            let media = match create_media_from_file_in(
+                source.clone(),
+                &temp.path().join("assets"),
+                state.repo.as_ref(),
+            )
+            .unwrap()
+            {
+                CreateMediaOutcome::Created(media) => media,
+                CreateMediaOutcome::Duplicate(_) => panic!("test media should be unique"),
+            };
+            if index == 0 {
+                first_id = media.id.as_str().to_string();
+            }
+            add_tag_to_media(
+                media.id.as_str(),
+                "many matches",
+                "subject",
+                state.repo.as_ref(),
+            )
+            .unwrap();
+        }
+        let tag_id = Tag::new("many matches").unwrap().id().to_string();
+
+        let count_response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/media?tag={tag_id}&limit=10"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let count_body = to_bytes(count_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let count_html = String::from_utf8(count_body.to_vec()).unwrap();
+        assert!(count_html.contains("media-count-number"));
+        assert!(count_html.contains(">10</span>"));
+        assert!(!count_html.contains("data-testid=\"media-card\""));
+
+        let items_response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/media?tag={tag_id}&limit=25"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let items_body = to_bytes(items_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let items_html = String::from_utf8(items_body.to_vec()).unwrap();
+        assert_eq!(items_html.matches("data-testid=\"media-card\"").count(), 10);
+        assert!(items_html.contains(&format!("/asset/{first_id}")));
+    }
+
+    #[tokio::test]
+    async fn media_asset_route_serves_only_media_stored_inside_assets_directory() {
+        let (state, temp) = test_app_state();
+        let media_id = seed_explore_relationships(&state, &temp);
+        let response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/asset/{media_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()[header::CONTENT_TYPE],
+            "application/octet-stream"
+        );
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.as_ref(), b"explore relationship seed");
+
+        let partial = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/asset/{media_id}"))
+                    .header(header::RANGE, "bytes=0-6")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(partial.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(partial.headers()[header::CONTENT_RANGE], "bytes 0-6/25");
+        let partial_body = to_bytes(partial.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(partial_body.as_ref(), b"explore");
+
+        let unsatisfiable = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/asset/{media_id}"))
+                    .header(header::RANGE, "bytes=100-")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unsatisfiable.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+
+        let missing = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/asset/not-in-the-database")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
