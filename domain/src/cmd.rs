@@ -2,7 +2,12 @@ use crate::{
     model,
     repository::{MediaRepository, SaveMediaError, TagRepository},
 };
-use std::{error::Error as StdError, fmt, fs, io::Read, path::PathBuf};
+use std::{
+    error::Error as StdError,
+    fmt, fs,
+    io::Read,
+    path::{Path, PathBuf},
+};
 use url;
 
 #[derive(Debug)]
@@ -38,10 +43,32 @@ impl<E: StdError + 'static> StdError for CreateMediaError<E> {
     }
 }
 
+/// Outcome of attempting to create media from a file.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CreateMediaOutcome {
+    /// A new media record was created.
+    Created(model::Media),
+    /// Identical content already exists in the repository.
+    Duplicate(model::MediaId),
+}
+
+/// Creates media from `src_path`, storing the copied file under the default
+/// `assets/` directory (relative to the process working directory).
 pub fn create_media_from_file<R: MediaRepository>(
     src_path: PathBuf,
     repo: &R,
-) -> Result<Option<model::Media>, CreateMediaError<R::Error>> {
+) -> Result<CreateMediaOutcome, CreateMediaError<R::Error>> {
+    create_media_from_file_in(src_path, Path::new("assets"), repo)
+}
+
+/// Creates media from `src_path`, storing the copied file under `dest_root`.
+///
+/// The destination directory is created on demand by the repository.
+pub fn create_media_from_file_in<R: MediaRepository>(
+    src_path: PathBuf,
+    dest_root: &Path,
+    repo: &R,
+) -> Result<CreateMediaOutcome, CreateMediaError<R::Error>> {
     let mut file = fs::File::open(&src_path).map_err(CreateMediaError::Io)?;
     let file_size = file.metadata().map_err(CreateMediaError::Io)?.len();
     let mime_type = infer::get_from_path(&src_path)
@@ -62,12 +89,10 @@ pub fn create_media_from_file<R: MediaRepository>(
         .media_exists(&id)
         .map_err(CreateMediaError::Repository)?
     {
-        return Ok(None);
+        return Ok(CreateMediaOutcome::Duplicate(id));
     }
     let file_ext = src_path.extension().unwrap_or(std::ffi::OsStr::new(""));
-    let dest_path = PathBuf::from("assets/")
-        .join(id.as_str())
-        .with_extension(file_ext);
+    let dest_path = dest_root.join(id.as_str()).with_extension(file_ext);
     let url = url::Url::parse(&format!("file:///{}", dest_path.display()))
         .map_err(CreateMediaError::Url)?;
     let media = model::Media::new(
@@ -87,7 +112,7 @@ pub fn create_media_from_file<R: MediaRepository>(
             SaveMediaError::Tag(t) => CreateMediaError::Tag(t),
         })?;
 
-    Ok(Some(media))
+    Ok(CreateMediaOutcome::Created(media))
 }
 
 #[derive(Debug)]
@@ -143,6 +168,16 @@ mod tests {
     use super::*;
     use crate::repository::{MediaRepository, SaveMediaError, TagRepository};
     use std::collections::HashSet;
+
+    impl CreateMediaOutcome {
+        /// Test helper: unwraps a `Created` outcome, panicking on duplicate.
+        fn expect_created(self, msg: &str) -> model::Media {
+            match self {
+                Self::Created(media) => media,
+                Self::Duplicate(id) => panic!("{msg}: unexpected duplicate for {}", id.as_str()),
+            }
+        }
+    }
 
     #[derive(Debug)]
     struct StubError;
@@ -317,7 +352,7 @@ mod tests {
 
         let media = create_media_from_file(path.clone(), &repo)
             .unwrap()
-            .expect("new media should be created");
+            .expect_created("new media should be created");
 
         let hash = blake3_hex(contents);
         assert_eq!(media.id.as_str(), hash);
@@ -338,7 +373,7 @@ mod tests {
 
         let media = create_media_from_file(path.clone(), &repo)
             .unwrap()
-            .expect("new media should be created");
+            .expect_created("new media should be created");
 
         assert_eq!(media.mime_type.as_deref(), Some("image/png"));
         assert_eq!(media.file_size, Some(contents.len() as u64));
@@ -354,7 +389,13 @@ mod tests {
 
         let result = create_media_from_file(path.clone(), &repo);
 
-        assert!(matches!(result, Ok(None)));
+        assert!(
+            matches!(
+                &result,
+                Ok(CreateMediaOutcome::Duplicate(id)) if id.as_str() == blake3_hex(contents)
+            ),
+            "expected duplicate outcome, got {result:?}"
+        );
 
         let _ = fs::remove_file(path);
     }

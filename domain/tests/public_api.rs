@@ -1,5 +1,5 @@
 use recondo_domain::{
-    cmd::{add_tag_to_media, create_media_from_file},
+    cmd::{CreateMediaOutcome, add_tag_to_media, create_media_from_file},
     model::{Media, MediaId, MediaOpts, Tag},
     qry::{
         CountedTag, MediaQueryItems, RelationshipTagGroup, filter_out_tags,
@@ -247,9 +247,10 @@ fn public_commands_create_media_and_add_tags() {
     fs::write(&path, contents).unwrap();
     let repo = TestRepo::default();
 
-    let created = create_media_from_file(path.clone(), &repo)
-        .unwrap()
-        .unwrap();
+    let created = match create_media_from_file(path.clone(), &repo).unwrap() {
+        CreateMediaOutcome::Created(media) => media,
+        CreateMediaOutcome::Duplicate(id) => panic!("unexpected duplicate for {}", id.as_str()),
+    };
 
     assert_eq!(
         created.id.as_str(),

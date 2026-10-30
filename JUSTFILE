@@ -4,5 +4,6 @@ check:
   cargo test
 
 run: check
-  rm ui/web/db/graph.redb
+  rm -f ui/web/db/graph.redb
+  rm -f assets/*
   cargo run

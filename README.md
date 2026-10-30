@@ -48,6 +48,16 @@ This makes Recondo particularly useful when:
 
 Recondo is built around a simple idea: finding media should be an exploration, not a scavenger hunt through folders.
 
+## Configuration
+
+The web UI reads these environment variables at startup:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `RECONDO_DB_PATH` | `ui/web/db/graph.redb` | Path to the Recondo graph database. Parent directories are created on demand. |
+| `RECONDO_ADDR` | `127.0.0.1:3000` | Address the web server binds to. |
+| `RECONDO_MAX_UPLOAD_MB` | *(unset = unlimited)* | Maximum upload size in whole mebibytes. When unset, uploads are uncapped — they are streamed to temporary files, so memory use stays bounded regardless of size. Set this (e.g. `RECONDO_MAX_UPLOAD_MB=64`) to enforce a limit; an invalid value logs a warning and leaves uploads unlimited. |
+
 ## Status
 
 Recondo is under development. Features, interfaces, and usage instructions will evolve as the project takes shape.

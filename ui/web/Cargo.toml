@@ -11,10 +11,15 @@ categories.workspace = true
 
 [dependencies]
 tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "net"] }
-axum = "0.8.9"
+axum = { version = "0.8.9", features = ["multipart"] }
 maud = { version = "0.27.0", features = ["axum"] }
 datastar = { version = "0.4.1", features = ["axum"] }
 tokio-stream = "0.1.19"
+recondo-domain = { path = "../../domain" }
+recondo-dal = { path = "../../dal" }
+redb = "4.4.0"
+tempfile = "3"
+async-stream = "0.3.6"
 
 [dev-dependencies]
 tower = { version = "0.5.3", features = ["util"] }

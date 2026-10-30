@@ -8,9 +8,10 @@ pub fn site_header() -> Markup {
                 "recondo"
             }
             nav aria-label="Main navigation" {
-                a href="#approach" { "Approach" }
-                a href="#demo" { "Explore" }
-                a class="nav-cta" href="#demo" { "See how it works" }
+                a href="/#approach" { "Approach" }
+                a href="/#demo" { "Explore" }
+                a href="/upload" { "Upload" }
+                a class="nav-cta" href="/upload" { "Upload media" }
             }
         }
     }
