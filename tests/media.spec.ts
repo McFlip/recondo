@@ -31,9 +31,9 @@ test('Explore tags open media results with removable selection and media viewers
   await expect(page.locator('.selected-tag-chip')).toContainText('needs tags');
   await expect(page.getByLabel('DISPLAY LIMIT')).toHaveValue('10');
   await expect(page.getByRole('button', { name: 'AND', exact: true })).toBeEnabled();
-  await expect(page.getByRole('button', { name: 'OR', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'OR', exact: true })).toBeEnabled();
   await expect(
-    page.getByText('Other logical operations are not functional yet.', { exact: true }),
+    page.getByText('AND then OR and OR then AND are not functional yet.', { exact: true }),
   ).toBeVisible();
 
   await page.setViewportSize({ width: 390, height: 844 });
@@ -74,4 +74,29 @@ test('Explore tags open media results with removable selection and media viewers
   await page.getByRole('link', { name: 'Remove needs tags' }).click();
   await expect(page).toHaveURL('/explore');
   await expect(page.getByRole('heading', { name: 'Explore your collection.' })).toBeVisible();
+});
+
+test('OR mode searches relationships and filters selected tags', async ({
+  page,
+}) => {
+  await seedMedia(page);
+  await page.goto('/explore');
+  await page.getByRole('searchbox').fill('to');
+  await page.getByRole('button', { name: 'to do' }).click();
+  await page.getByRole('link', { name: 'needs tags' }).click();
+
+  await page.getByRole('button', { name: 'OR', exact: true }).click();
+  await expect(page).toHaveURL(/\/media\?tag=[a-f0-9]+&limit=10&operation=or$/);
+  await expect(page.getByRole('heading', { name: 'Add tags' })).toBeVisible();
+
+  await page.getByRole('searchbox', { name: 'SEARCH RELATIONSHIPS' }).fill('to');
+  await page.getByRole('button', { name: 'to do' }).click();
+  await expect(page.locator('#media-relationship-details')).toContainText(
+    'No unselected tags are available in this relationship.',
+  );
+  await expect(page.getByTestId('or-picker-tag')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'AND', exact: true }).click();
+  await expect(page).toHaveURL(/\/media\?tag=[a-f0-9]+&limit=10$/);
+  await expect(page.getByRole('heading', { name: 'Related tags' })).toBeVisible();
 });

@@ -21,8 +21,8 @@ use recondo_domain::cmd::{CreateMediaOutcome, create_media_from_file_in};
 use recondo_domain::model::{MediaId, Tag, normalize_relationship};
 use recondo_domain::repository::{MediaRepository, TagRepository};
 use recondo_domain::{
-    get_enriched_media_by_logical_and, get_relationships_by_prefix, get_tag_adj_list,
-    get_tags_by_relationship,
+    get_enriched_media_by_logical_and, get_enriched_media_by_logical_or,
+    get_relationships_by_prefix, get_tag_adj_list, get_tags_by_relationship,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio_stream::iter;
@@ -46,6 +46,12 @@ pub fn router(state: AppState) -> Router {
         .route("/explore/relationship", get(show_relationship))
         .route("/explore/submit", get(submit_relationship_search))
         .route("/media", get(media_page))
+        .route("/media/relationship-search", get(media_picker_search))
+        .route("/media/relationship", get(media_picker_relationship))
+        .route(
+            "/media/relationship-submit",
+            get(media_picker_submit_relationship),
+        )
         .route("/asset/{id}", get(media_asset_by_id))
         .route("/upload", get(upload_page))
         .route("/upload", post(upload_handler))
@@ -96,6 +102,7 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
         return media::render(
             &[],
             params.limit,
+            params.operation,
             None,
             None,
             "Select a tag from Explore to find connected media.",
@@ -109,23 +116,37 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
         .collect::<Vec<_>>();
     let tag_ids = params.tag_ids.clone();
     let limit = params.limit;
+    let operation = params.operation;
     let result = tokio::task::spawn_blocking(move || {
-        let query = get_enriched_media_by_logical_and(&tag_ids, limit, repo.as_ref())
-            .map_err(|error| error.to_string())?;
+        let query = match operation {
+            media::Operation::And => {
+                get_enriched_media_by_logical_and(&tag_ids, limit, repo.as_ref())
+            }
+            media::Operation::Or => {
+                get_enriched_media_by_logical_or(&tag_ids, limit, repo.as_ref())
+            }
+        }
+        .map_err(|error| error.to_string())?;
         let selected_tags = selected_tag_labels(&tag_ids, repo.as_ref())?;
         Ok::<_, String>((query, selected_tags))
     })
     .await;
 
     match result {
-        Ok(Ok((query, selected_tags))) => {
-            media::render(&selected_tags, params.limit, Some(&query), None, "")
-        }
+        Ok(Ok((query, selected_tags))) => media::render(
+            &selected_tags,
+            params.limit,
+            params.operation,
+            Some(&query),
+            None,
+            "",
+        ),
         Ok(Err(error)) => {
             eprintln!("Error querying media for selected tags: {error}");
             media::render(
                 &placeholder_tags,
                 params.limit,
+                params.operation,
                 None,
                 Some(&error),
                 "The media search could not be completed.",
@@ -136,6 +157,7 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
             media::render(
                 &placeholder_tags,
                 params.limit,
+                params.operation,
                 None,
                 Some(&error.to_string()),
                 "The media search could not be completed.",
@@ -147,11 +169,13 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
 struct MediaQueryParams {
     tag_ids: Vec<String>,
     limit: usize,
+    operation: media::Operation,
 }
 
 fn parse_media_query(query: &str) -> MediaQueryParams {
     let mut tag_ids = Vec::new();
     let mut limit = media::DEFAULT_LIMIT;
+    let mut operation = media::Operation::And;
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
         match key.as_ref() {
             "tag" if !value.is_empty() => {
@@ -171,10 +195,64 @@ fn parse_media_query(query: &str) -> MediaQueryParams {
                         .unwrap_or(media::DEFAULT_LIMIT)
                 };
             }
+            "operation" => {
+                operation = if value == "or" {
+                    media::Operation::Or
+                } else {
+                    media::Operation::And
+                };
+            }
             _ => {}
         }
     }
-    MediaQueryParams { tag_ids, limit }
+    MediaQueryParams {
+        tag_ids,
+        limit,
+        operation,
+    }
+}
+
+struct MediaPickerParams {
+    prefix: String,
+    relationship: String,
+    selected_ids: Vec<String>,
+    limit: usize,
+}
+
+fn parse_media_picker_query(query: &str) -> MediaPickerParams {
+    let mut params = MediaPickerParams {
+        prefix: String::new(),
+        relationship: String::new(),
+        selected_ids: Vec::new(),
+        limit: media::DEFAULT_LIMIT,
+    };
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "prefix" => params.prefix = value.into_owned(),
+            "query" => params.prefix = value.into_owned(),
+            "name" => params.relationship = value.into_owned(),
+            "selected" => {
+                for id in value.split(',').filter(|id| !id.is_empty()) {
+                    if !params.selected_ids.iter().any(|selected| selected == id) {
+                        params.selected_ids.push(id.to_string());
+                    }
+                }
+            }
+            "limit" => {
+                params.limit = if value == "unlimited" {
+                    usize::MAX
+                } else {
+                    value
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|value| media::LIMIT_OPTIONS.contains(value))
+                        .unwrap_or(media::DEFAULT_LIMIT)
+                };
+            }
+            _ => {}
+        }
+    }
+    params
 }
 
 fn selected_tag_labels<R>(tag_ids: &[String], repo: &R) -> Result<Vec<Tag>, String>
@@ -256,6 +334,140 @@ async fn show_relationship(
     let relationship = params.get("name").cloned().unwrap_or_default();
     let markup = relationship_tags_markup(state.repo, relationship).await;
     patch_response("#relationship-details", markup)
+}
+
+async fn media_picker_search(
+    State(state): State<AppState>,
+    RawQuery(raw_query): RawQuery,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let params = parse_media_picker_query(raw_query.as_deref().unwrap_or_default());
+    let prefix = params.prefix.clone();
+    let query_prefix = prefix.clone();
+    let repo = state.repo;
+    let result = tokio::task::spawn_blocking(move || {
+        get_relationships_by_prefix(&query_prefix, Some(12), repo.as_ref())
+    })
+    .await;
+
+    let markup = match result {
+        Ok(Ok(relationships)) => media::picker_suggestions(
+            &prefix,
+            relationships.as_deref().unwrap_or_default(),
+            &params.selected_ids,
+            params.limit,
+        ),
+        Ok(Err(error)) => {
+            eprintln!("Error searching media-picker relationships by prefix {prefix:?}: {error}");
+            media::picker_suggestion_error(&format!("Could not search relationships: {error}"))
+        }
+        Err(error) => {
+            eprintln!("Media-picker relationship search task failed for {prefix:?}: {error}");
+            media::picker_suggestion_error(&format!("Relationship search failed: {error}"))
+        }
+    };
+    patch_response("#media-relationship-suggestions", markup)
+}
+
+async fn media_picker_relationship(
+    State(state): State<AppState>,
+    RawQuery(raw_query): RawQuery,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let params = parse_media_picker_query(raw_query.as_deref().unwrap_or_default());
+    let markup = load_media_picker_relationship(
+        state.repo,
+        params.relationship,
+        params.selected_ids,
+        params.limit,
+    )
+    .await;
+    patch_response("#media-relationship-details", markup)
+}
+
+async fn media_picker_submit_relationship(
+    State(state): State<AppState>,
+    RawQuery(raw_query): RawQuery,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let params = parse_media_picker_query(raw_query.as_deref().unwrap_or_default());
+    let query = params.prefix.clone();
+    if normalize_relationship(&query).is_empty() {
+        return patch_response(
+            "#media-relationship-details",
+            media::picker_message("Type a relationship to see its tags."),
+        );
+    }
+
+    let repo = state.repo;
+    let normalized_query = normalize_relationship(&query);
+    let query_for_task = query.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let relationships = get_relationships_by_prefix(&query_for_task, None, repo.as_ref())
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        let selected = relationships
+            .iter()
+            .find(|relationship| **relationship == normalized_query)
+            .or_else(|| relationships.first());
+        match selected {
+            Some(relationship) => {
+                let tags = get_tags_by_relationship(relationship, repo.as_ref())
+                    .map_err(|error| error.to_string())?
+                    .unwrap_or_default();
+                Ok::<_, String>(Some((relationship.clone(), tags)))
+            }
+            None => Ok(None),
+        }
+    })
+    .await;
+
+    let markup = match result {
+        Ok(Ok(Some((relationship, tags)))) => media::picker_relationship_tags(
+            &relationship,
+            &tags,
+            &params.selected_ids,
+            params.limit,
+        ),
+        Ok(Ok(None)) => media::picker_message("No matching relationships were found."),
+        Ok(Err(error)) => {
+            eprintln!("Error resolving media-picker relationship {query:?}: {error}");
+            media::picker_relationship_error(&format!("Could not load relationship tags: {error}"))
+        }
+        Err(error) => {
+            eprintln!("Media-picker relationship selection task failed for {query:?}: {error}");
+            media::picker_relationship_error(&format!("Relationship search failed: {error}"))
+        }
+    };
+    patch_response("#media-relationship-details", markup)
+}
+
+async fn load_media_picker_relationship(
+    repo: Arc<RedbMediaRepository>,
+    relationship: String,
+    selected_ids: Vec<String>,
+    limit: usize,
+) -> maud::Markup {
+    if normalize_relationship(&relationship).is_empty() {
+        return media::picker_message("Choose a relationship to see its tags.");
+    }
+
+    match tokio::task::spawn_blocking(move || {
+        get_tags_by_relationship(&relationship, repo.as_ref())
+            .map(|tags| tags.map(|tags| (relationship, tags)))
+    })
+    .await
+    {
+        Ok(Ok(Some((relationship, tags)))) => {
+            media::picker_relationship_tags(&relationship, &tags, &selected_ids, limit)
+        }
+        Ok(Ok(None)) => media::picker_message("No tags were found for that relationship."),
+        Ok(Err(error)) => {
+            eprintln!("Error loading media-picker relationship tags: {error}");
+            media::picker_relationship_error(&format!("Could not load relationship tags: {error}"))
+        }
+        Err(error) => {
+            eprintln!("Media-picker relationship tag lookup task failed: {error}");
+            media::picker_relationship_error(&format!("Relationship tag lookup failed: {error}"))
+        }
+    }
 }
 
 async fn submit_relationship_search(
@@ -1008,10 +1220,97 @@ mod tests {
         assert!(html.contains("topic tag"));
         assert!(html.contains("needs tags"));
         assert!(html.contains("DISPLAY LIMIT"));
-        assert!(html.contains("Other logical operations are not functional yet."));
+        assert!(html.contains("AND then OR and OR then AND are not functional yet."));
         assert!(html.contains(&format!("href=\"/media?tag={other_tag_id}&amp;limit=25\"")));
         assert!(html.contains("Download file"));
         assert!(html.contains("data-on:change"));
+    }
+
+    #[tokio::test]
+    async fn media_or_query_uses_logical_or_and_picker_excludes_selected_tags() {
+        let (state, temp) = test_app_state();
+        let first_media_id = seed_explore_relationships(&state, &temp);
+        let second_source = temp.path().join("second-media.txt");
+        std::fs::write(&second_source, "a distinct media item").unwrap();
+        let second_media = match create_media_from_file_in(
+            second_source,
+            &temp.path().join("assets"),
+            state.repo.as_ref(),
+        )
+        .unwrap()
+        {
+            CreateMediaOutcome::Created(media) => media,
+            CreateMediaOutcome::Duplicate(_) => panic!("test media should be unique"),
+        };
+        add_tag_to_media(
+            second_media.id.as_str(),
+            "another subject",
+            "subject",
+            state.repo.as_ref(),
+        )
+        .unwrap();
+
+        let first_tag_id = Tag::new("field note").unwrap().id().to_string();
+        let second_tag_id = Tag::new("another subject").unwrap().id().to_string();
+        let or_response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/media?tag={first_tag_id}&tag={second_tag_id}&operation=or&limit=10"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let or_body = to_bytes(or_response.into_body(), usize::MAX).await.unwrap();
+        let or_html = String::from_utf8(or_body.to_vec()).unwrap();
+        assert_eq!(or_html.matches("data-testid=\"media-card\"").count(), 2);
+        assert!(or_html.contains("aria-label=\"Add tags\""));
+        assert!(or_html.contains("name=\"operation\" value=\"or\""));
+        assert!(or_html.contains("class=\"operation-button is-selected\""));
+
+        let and_response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/media?tag={first_tag_id}&tag={second_tag_id}&limit=10"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let and_body = to_bytes(and_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let and_html = String::from_utf8(and_body.to_vec()).unwrap();
+        assert!(and_html.contains("No media matches all selected tags."));
+        assert!(!and_html.contains("data-testid=\"media-card\""));
+        assert!(!and_html.contains(&format!("/asset/{first_media_id}")));
+
+        let needs_tags_id = Tag::new("needs tags").unwrap().id().to_string();
+        let picker_response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/media/relationship?name=to%20do&selected={needs_tags_id}&limit=25"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let picker_body = to_bytes(picker_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let picker_html = String::from_utf8(picker_body.to_vec()).unwrap();
+        let field_note_id = Tag::new("field note").unwrap().id().to_string();
+        assert!(picker_html.contains("field note"));
+        assert!(!picker_html.contains("needs tags"));
+        assert!(picker_html.contains(&format!(
+            "href=\"/media?tag={needs_tags_id}&amp;tag={field_note_id}&amp;limit=25&amp;operation=or\""
+        )));
     }
 
     #[tokio::test]
