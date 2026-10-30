@@ -7,7 +7,7 @@ use async_stream::stream;
 use axum::{
     Router,
     body::Body,
-    extract::{DefaultBodyLimit, Multipart, Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response, Sse},
     routing::{get, post},
@@ -18,8 +18,11 @@ use datastar::{
 };
 use recondo_dal::media::RedbMediaRepository;
 use recondo_domain::cmd::{CreateMediaOutcome, create_media_from_file_in};
+use recondo_domain::model::normalize_relationship;
+use recondo_domain::{get_relationships_by_prefix, get_tags_by_relationship};
 use tokio_stream::iter;
 
+use crate::pages::explore;
 use crate::pages::landing::{self, DemoFilter};
 use crate::pages::upload;
 
@@ -32,6 +35,10 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(landing_page))
+        .route("/explore", get(explore_page))
+        .route("/explore/search", get(search_relationships))
+        .route("/explore/relationship", get(show_relationship))
+        .route("/explore/submit", get(submit_relationship_search))
         .route("/upload", get(upload_page))
         .route("/upload", post(upload_handler))
         .route("/demo/{filter}", get(filter_demo))
@@ -67,6 +74,138 @@ async fn landing_page() -> maud::Markup {
 
 async fn upload_page() -> maud::Markup {
     upload::render()
+}
+
+async fn explore_page() -> maud::Markup {
+    explore::render()
+}
+
+fn patch_response(
+    selector: &'static str,
+    markup: maud::Markup,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let event = PatchElements::new(markup.into_string())
+        .selector(selector)
+        .mode(ElementPatchMode::Outer)
+        .into();
+    Sse::new(iter([Ok(event)]))
+}
+
+async fn search_relationships(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let prefix = params.get("prefix").cloned().unwrap_or_default();
+    let repo = state.repo;
+    let query_prefix = prefix.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        get_relationships_by_prefix(&query_prefix, Some(12), repo.as_ref())
+    })
+    .await;
+
+    let markup = match result {
+        Ok(Ok(relationships)) => {
+            explore::suggestions(&prefix, relationships.as_deref().unwrap_or_default())
+        }
+        Ok(Err(error)) => {
+            eprintln!("Error searching relationships by prefix {prefix:?}: {error}");
+            explore::suggestion_error(&format!("Could not search relationships: {error}"))
+        }
+        Err(error) => {
+            eprintln!("Relationship search task failed for prefix {prefix:?}: {error}");
+            explore::suggestion_error(&format!("Relationship search failed: {error}"))
+        }
+    };
+
+    patch_response("#relationship-suggestions", markup)
+}
+
+async fn show_relationship(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let relationship = params.get("name").cloned().unwrap_or_default();
+    let markup = relationship_tags_markup(state.repo, relationship).await;
+    patch_response("#relationship-details", markup)
+}
+
+async fn submit_relationship_search(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let query = params.get("query").cloned().unwrap_or_default();
+    if normalize_relationship(&query).is_empty() {
+        return patch_response(
+            "#relationship-details",
+            explore::selection_message("Type a relationship to see its tags."),
+        );
+    }
+
+    let repo = state.repo;
+    let query_for_task = query.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let relationships = get_relationships_by_prefix(&query_for_task, None, repo.as_ref())
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        let normalized_query = normalize_relationship(&query_for_task);
+        let selected = relationships
+            .iter()
+            .find(|relationship| **relationship == normalized_query)
+            .or_else(|| relationships.first());
+
+        match selected {
+            Some(relationship) => {
+                let tags = get_tags_by_relationship(relationship, repo.as_ref())
+                    .map_err(|error| error.to_string())?
+                    .unwrap_or_default();
+                Ok::<_, String>(Some((relationship.clone(), tags)))
+            }
+            None => Ok::<_, String>(None),
+        }
+    })
+    .await;
+
+    let markup = match result {
+        Ok(Ok(Some((relationship, tags)))) => explore::relationship_tags(&relationship, &tags),
+        Ok(Ok(None)) => explore::selection_message("No matching relationships were found."),
+        Ok(Err(error)) => {
+            eprintln!("Error resolving relationship search {query:?}: {error}");
+            explore::relationship_error(&format!("Could not load relationship tags: {error}"))
+        }
+        Err(error) => {
+            eprintln!("Relationship selection task failed for query {query:?}: {error}");
+            explore::relationship_error(&format!("Relationship search failed: {error}"))
+        }
+    };
+
+    patch_response("#relationship-details", markup)
+}
+
+async fn relationship_tags_markup(
+    repo: Arc<RedbMediaRepository>,
+    relationship: String,
+) -> maud::Markup {
+    if normalize_relationship(&relationship).is_empty() {
+        return explore::selection_message("Choose a relationship to see its tags.");
+    }
+
+    match tokio::task::spawn_blocking(move || {
+        get_tags_by_relationship(&relationship, repo.as_ref())
+            .map(|tags| tags.map(|tags| (relationship, tags)))
+    })
+    .await
+    {
+        Ok(Ok(Some((relationship, tags)))) => explore::relationship_tags(&relationship, &tags),
+        Ok(Ok(None)) => explore::selection_message("No tags were found for that relationship."),
+        Ok(Err(error)) => {
+            eprintln!("Error loading tags for relationship: {error}");
+            explore::relationship_error(&format!("Could not load relationship tags: {error}"))
+        }
+        Err(error) => {
+            eprintln!("Relationship tag lookup task failed: {error}");
+            explore::relationship_error(&format!("Relationship tag lookup failed: {error}"))
+        }
+    }
 }
 
 /// Prepends `markup` to the processed-media feed.
@@ -276,6 +415,7 @@ mod tests {
         http::{Request, StatusCode},
     };
     use recondo_dal::media::RedbMediaRepository;
+    use recondo_domain::cmd::{CreateMediaOutcome, add_tag_to_media, create_media_from_file_in};
     use recondo_domain::repository::MediaRepository;
     use redb::Database;
     use tower::ServiceExt;
@@ -297,6 +437,30 @@ mod tests {
             assets_dir: temp_dir.path().join("assets"),
         };
         (state, temp_dir)
+    }
+
+    fn seed_explore_relationships(state: &AppState, temp: &tempfile::TempDir) {
+        let source = temp.path().join("explore-seed.txt");
+        std::fs::write(&source, "explore relationship seed").unwrap();
+        let media = match create_media_from_file_in(
+            source,
+            &temp.path().join("assets"),
+            state.repo.as_ref(),
+        )
+        .unwrap()
+        {
+            CreateMediaOutcome::Created(media) => media,
+            CreateMediaOutcome::Duplicate(_) => panic!("test media should be unique"),
+        };
+
+        add_tag_to_media(
+            media.id.as_str(),
+            "field note",
+            "to do",
+            state.repo.as_ref(),
+        )
+        .unwrap();
+        add_tag_to_media(media.id.as_str(), "topic tag", "topic", state.repo.as_ref()).unwrap();
     }
 
     #[tokio::test]
@@ -384,6 +548,128 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn explore_page_renders_live_relationship_search() {
+        let (state, _tmp) = test_app_state();
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/explore")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(html.contains("Explore your "));
+        assert!(html.contains("data-on:input"));
+        assert!(html.contains("/explore/search?prefix="));
+        assert!(html.contains("relationship-suggestions"));
+        assert!(html.contains("href=\"/explore\""));
+    }
+
+    #[tokio::test]
+    async fn explore_search_returns_relationships_matching_prefix() {
+        let (state, temp) = test_app_state();
+        seed_explore_relationships(&state, &temp);
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/explore/search?prefix=t")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let event_stream = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(event_stream.contains("datastar-patch-elements"));
+        assert!(event_stream.contains("to do"));
+        assert!(event_stream.contains("topic"));
+    }
+
+    #[tokio::test]
+    async fn explore_search_reports_when_no_relationships_match() {
+        let (state, _temp) = test_app_state();
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/explore/search?prefix=missing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let event_stream = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(event_stream.contains("No relationships match"));
+    }
+
+    #[tokio::test]
+    async fn explore_relationship_selection_shows_all_associated_tags() {
+        let (state, temp) = test_app_state();
+        seed_explore_relationships(&state, &temp);
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/explore/relationship?name=to%20do")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let event_stream = String::from_utf8(body.to_vec()).unwrap();
+
+        assert!(event_stream.contains("relationship-tag-grid"));
+        assert!(event_stream.contains("needs tags"));
+        assert!(event_stream.contains("field note"));
+        assert!(event_stream.contains("2 tags"));
+    }
+
+    #[tokio::test]
+    async fn explore_enter_selection_prefers_exact_then_first_prefix_match() {
+        let (state, temp) = test_app_state();
+        seed_explore_relationships(&state, &temp);
+        let exact_response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/explore/submit?query=topic")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let exact_body = to_bytes(exact_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let exact_event = String::from_utf8(exact_body.to_vec()).unwrap();
+        assert!(exact_event.contains("<h2>topic</h2>"));
+        assert!(exact_event.contains("topic tag"));
+        assert!(!exact_event.contains("needs tags"));
+
+        let prefix_response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/explore/submit?query=t")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let prefix_body = to_bytes(prefix_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let prefix_event = String::from_utf8(prefix_body.to_vec()).unwrap();
+        assert!(prefix_event.contains("<h2>to do</h2>"));
+        assert!(prefix_event.contains("needs tags"));
+        assert!(prefix_event.contains("field note"));
     }
 
     #[tokio::test]

@@ -9,7 +9,7 @@ pub fn site_header() -> Markup {
             }
             nav aria-label="Main navigation" {
                 a href="/#approach" { "Approach" }
-                a href="/#demo" { "Explore" }
+                a href="/explore" { "Explore" }
                 a href="/upload" { "Upload" }
                 a class="nav-cta" href="/upload" { "Upload media" }
             }
