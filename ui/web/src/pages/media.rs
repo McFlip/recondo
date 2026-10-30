@@ -180,7 +180,11 @@ fn selected_tag(tag: &Tag, selected_ids: &[String], limit: usize) -> Markup {
         .filter(|id| id.as_str() != tag.id())
         .cloned()
         .collect::<Vec<_>>();
-    let href = media_url(&remaining, limit);
+    let href = if remaining.is_empty() {
+        "/explore".to_string()
+    } else {
+        media_url(&remaining, limit)
+    };
     html! {
         span class="selected-tag-chip" {
             span { (tag.name()) }

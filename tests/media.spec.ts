@@ -72,7 +72,6 @@ test('Explore tags open media results with removable selection and media viewers
   await expect(page.locator('#media-lightbox')).not.toBeVisible();
 
   await page.getByRole('link', { name: 'Remove needs tags' }).click();
-  await expect(page).toHaveURL('/media?limit=400');
-  await expect(page.locator('.selected-tag-chip')).toHaveCount(0);
-  await expect(page.locator('.media-empty-state')).toContainText('Select a tag');
+  await expect(page).toHaveURL('/explore');
+  await expect(page.getByRole('heading', { name: 'Explore your collection.' })).toBeVisible();
 });
