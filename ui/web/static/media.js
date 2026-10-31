@@ -25,8 +25,12 @@ window.openMediaLightbox = (clickedImg) => {
   const dialog = document.getElementById('media-lightbox');
   if (!dialog) return;
 
-  window.updateMediaLightbox();
   dialog.showModal();
+  window.updateMediaLightbox();
+  const lightboxImg = document.getElementById('media-lightbox-image');
+  if (lightboxImg) {
+    lightboxImg.decode?.().catch(() => {});
+  }
 };
 
 window.updateMediaLightbox = () => {

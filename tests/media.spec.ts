@@ -398,3 +398,22 @@ test('media details can add, create, remove, and retain relationship-tag pairs',
   );
   await expect(page.getByRole('link', { name: 'Back to results' })).toHaveCount(0);
 });
+
+test('lightbox image loads on first open', async ({ page }) => {
+  await seedMedia(page);
+  await page.goto('/explore');
+  await page.getByRole('searchbox').fill('to');
+  await page.getByRole('button', { name: 'to do' }).click();
+  await page.getByRole('link', { name: 'needs tags' }).click();
+  await page.getByLabel('DISPLAY LIMIT').selectOption('400');
+  await expect(page.locator('[data-testid="media-card"]').first()).toBeVisible();
+  const image = page.locator('.media-preview img').first();
+  await image.click();
+  await expect(page.locator('#media-lightbox')).toBeVisible();
+  await expect
+    .poll(() =>
+      page.locator('#media-lightbox-image').evaluate((el: HTMLImageElement) => el.naturalWidth > 0),
+    )
+    .toBe(true);
+  await page.getByRole('button', { name: 'Close image' }).click();
+});
