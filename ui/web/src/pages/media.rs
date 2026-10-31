@@ -948,12 +948,14 @@ pub fn render_details(
                                                     aria-label=(format!("Search media tagged {}", tag.name())) {
                                                     "#" (tag.name())
                                                 }
-                                                button
-                                                    type="submit"
-                                                    class="details-tag-remove"
-                                                    aria-label=(format!("Remove {} under {}", tag.name(), tag_relationship))
-                                                    title="Remove tag" {
-                                                    "×"
+                                                @if tag_pairs.len() > 1 {
+                                                    button
+                                                        type="submit"
+                                                        class="details-tag-remove"
+                                                        aria-label=(format!("Remove {} under {}", tag.name(), tag_relationship))
+                                                        title="Remove tag" {
+                                                        "×"
+                                                    }
                                                 }
                                             }
                                         }

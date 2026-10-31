@@ -383,6 +383,14 @@ async fn remove_media_detail_tag(State(state): State<AppState>, body: Bytes) -> 
     let tag_id = tag_id.clone();
     let relationship = relationship.clone();
     match tokio::task::spawn_blocking(move || {
+        let media_id = MediaId::from_hash(command_media_id.clone()).unwrap();
+        let edges = repo
+            .get_media_adj_list(&media_id)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        if edges.len() <= 1 {
+            return Err("Cannot remove the last remaining tag.".to_string());
+        }
         remove_tag_from_media(&command_media_id, &tag_id, &relationship, repo.as_ref())
             .map_err(|error| error.to_string())
     })
