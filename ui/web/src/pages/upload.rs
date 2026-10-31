@@ -114,6 +114,20 @@ pub fn render() -> Markup {
                             }
                         }
 
+                        section class="upload-title-section" aria-label="Title for uploaded media" {
+                            label for="upload-title" class="media-control-label" { "MEDIA TITLE (OPTIONAL)" }
+                            input
+                                id="upload-title"
+                                class="upload-title-input"
+                                type="text"
+                                name="title"
+                                placeholder="Applied to every file in this upload"
+                                autocomplete="off";
+                            p class="media-control-note" {
+                                "Leave blank to keep no title."
+                            }
+                        }
+
                         div id="dropzone"
                             class="upload-dropzone"
                             data-class:is-dragging="$dragging"

@@ -72,7 +72,7 @@ pub fn create_media_from_file_in<R: MediaRepository>(
     dest_root: &Path,
     repo: &R,
 ) -> Result<CreateMediaOutcome, CreateMediaError<R::Error>> {
-    create_media_from_file_in_with_assignments(src_path, dest_root, repo, None)
+    create_media_from_file_in_with_assignments(src_path, dest_root, repo, None, None)
 }
 
 /// Creates media while attaching the selected relationship/tag pairs instead
@@ -83,6 +83,16 @@ pub fn create_media_from_file_in_with_tags<R: MediaRepository>(
     src_path: PathBuf,
     dest_root: &Path,
     tags: &[(String, String)],
+    repo: &R,
+) -> Result<CreateMediaOutcome, CreateMediaError<R::Error>> {
+    create_media_from_file_in_with_tags_and_title(src_path, dest_root, tags, None, repo)
+}
+
+pub fn create_media_from_file_in_with_tags_and_title<R: MediaRepository>(
+    src_path: PathBuf,
+    dest_root: &Path,
+    tags: &[(String, String)],
+    title: Option<String>,
     repo: &R,
 ) -> Result<CreateMediaOutcome, CreateMediaError<R::Error>> {
     let mut assignments = Vec::with_capacity(tags.len());
@@ -100,7 +110,7 @@ pub fn create_media_from_file_in_with_tags<R: MediaRepository>(
             assignments.push((relationship, tag));
         }
     }
-    create_media_from_file_in_with_assignments(src_path, dest_root, repo, Some(&assignments))
+    create_media_from_file_in_with_assignments(src_path, dest_root, repo, Some(&assignments), title)
 }
 
 fn create_media_from_file_in_with_assignments<R: MediaRepository>(
@@ -108,6 +118,7 @@ fn create_media_from_file_in_with_assignments<R: MediaRepository>(
     dest_root: &Path,
     repo: &R,
     tags: Option<&[(String, model::Tag)]>,
+    title: Option<String>,
 ) -> Result<CreateMediaOutcome, CreateMediaError<R::Error>> {
     let mut file = fs::File::open(&src_path).map_err(CreateMediaError::Io)?;
     let file_size = file.metadata().map_err(CreateMediaError::Io)?.len();
@@ -143,7 +154,7 @@ fn create_media_from_file_in_with_assignments<R: MediaRepository>(
         id,
         url,
         Some(model::MediaOpts {
-            title: None,
+            title,
             mime_type,
             file_size: Some(file_size),
             view_count: None,

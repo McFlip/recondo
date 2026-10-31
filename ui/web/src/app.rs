@@ -18,7 +18,7 @@ use datastar::{
 };
 use recondo_dal::media::RedbMediaRepository;
 use recondo_domain::cmd::{
-    CreateMediaOutcome, add_tag_to_media, create_media_from_file_in_with_tags,
+    CreateMediaOutcome, add_tag_to_media, create_media_from_file_in_with_tags_and_title,
     remove_tag_from_media,
 };
 use recondo_domain::model::{MediaId, Tag, normalize_relationship};
@@ -1150,6 +1150,7 @@ async fn upload_handler(
 
         let mut staged_uploads = Vec::new();
         let mut tag_pairs = Vec::new();
+        let mut upload_title: Option<String> = None;
         let mut request_error = None;
         loop {
             let mut field = match multipart.next_field().await {
@@ -1164,6 +1165,19 @@ async fn upload_handler(
             let field_name = field.name().unwrap_or_default().to_string();
             let filename = field.file_name().map(str::to_string);
             let content_type = field.content_type().map(str::to_string);
+
+            if field_name == "title" && filename.is_none() {
+                match field.text().await {
+                    Ok(value) => {
+                        let trimmed = value.trim();
+                        if !trimmed.is_empty() {
+                            upload_title = Some(trimmed.to_string());
+                        }
+                    }
+                    Err(error) => request_error = Some(format!("Could not read title: {error}")),
+                }
+                continue;
+            }
 
             if field_name == "tag_pair" && filename.is_none() {
                 match field.text().await {
@@ -1291,11 +1305,13 @@ async fn upload_handler(
                     let repo = state.repo.clone();
                     let dest_root = state.assets_dir.clone();
                     let selected_tags = tag_pairs.clone();
+                    let title = upload_title.clone();
                     let result = tokio::task::spawn_blocking(move || {
-                        let result = create_media_from_file_in_with_tags(
+                        let result = create_media_from_file_in_with_tags_and_title(
                             temp_path,
                             dest_root.as_path(),
                             &selected_tags,
+                            title,
                             repo.as_ref(),
                         );
                         drop(temp_file);
