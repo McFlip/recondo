@@ -874,7 +874,14 @@ pub fn picker_message(message: &str) -> Markup {
     }
 }
 
-pub fn render_details(media: &Media, tags: &[Tag]) -> Markup {
+pub fn render_details(
+    media: &Media,
+    tag_pairs: &[(String, Tag)],
+    media_id: &str,
+    return_to: Option<&str>,
+    notice: Option<&str>,
+    error: Option<&str>,
+) -> Markup {
     let asset_url = format!("/asset/{}", media.id.as_str());
     let title = media.title.as_deref().unwrap_or_else(|| media.id.as_str());
     let mime_type = media
@@ -898,16 +905,118 @@ pub fn render_details(media: &Media, tags: &[Tag]) -> Markup {
         "Media details",
         html! {
             section class="shell media-details section-space" {
-                button class="back-button" data-on:click="window.history.back()" { "← Back" }
+                @if let Some(return_to) = return_to {
+                    a class="back-button" href=(return_to) { "← Back to results" }
+                }
                 div class="details-meta" {
                     h1 { (title) }
                     p { "MIME: " (mime_type) }
                     p { "Size: " (size_display) }
                     p { "Views: " (media.view_count) }
                     p { "URL: " (media.url.as_str()) }
-                    div class="tag-list" {
-                        @for tag in tags {
-                            span class="tag-chip" { (tag.name()) }
+                }
+                section class="details-tag-management" aria-label="Manage media tags" {
+                    div class="details-tag-management-heading" {
+                        p class="eyebrow" { "TAG THIS ITEM" }
+                        h2 { "Connections" }
+                    }
+                    @if let Some(notice) = notice {
+                        p class="details-tag-notice" role="status" { (notice) }
+                    }
+                    @if let Some(error) = error {
+                        p class="details-tag-error" role="alert" { (error) }
+                    }
+                    div class="details-tag-list" {
+                        @if tag_pairs.is_empty() {
+                            p class="media-muted" { "No tags are associated with this item yet." }
+                        } @else {
+                            @for relationship in tag_pairs.iter().map(|(relationship, _)| relationship).collect::<std::collections::BTreeSet<_>>() {
+                                section class="details-tag-group" aria-label=(relationship) {
+                                    h3 { (relationship) }
+                                    div class="tag-list" {
+                                        @for (tag_relationship, tag) in tag_pairs.iter().filter(|(tag_relationship, _)| tag_relationship == relationship) {
+                                            form class="details-tag-pair" method="post" action="/media/details/tag/remove" {
+                                                input type="hidden" name="media_id" value=(media_id);
+                                                @if let Some(return_to) = return_to {
+                                                    input type="hidden" name="return_to" value=(return_to);
+                                                }
+                                                input type="hidden" name="relationship" value=(tag_relationship);
+                                                input type="hidden" name="tag_id" value=(tag.id());
+                                                a
+                                                    class="tag-chip"
+                                                    href=(media_url(&[tag.id().to_string()], DEFAULT_LIMIT, Operation::And))
+                                                    aria-label=(format!("Search media tagged {}", tag.name())) {
+                                                    "#" (tag.name())
+                                                }
+                                                button
+                                                    type="submit"
+                                                    class="details-tag-remove"
+                                                    aria-label=(format!("Remove {} under {}", tag.name(), tag_relationship))
+                                                    title="Remove tag" {
+                                                    "×"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    div class="details-tag-picker" {
+                        div class="details-existing-tag-picker" {
+                            label for="details-relationship-query" class="explore-search-label" {
+                                "FIND AN EXISTING RELATIONSHIP"
+                            }
+                            input
+                                id="details-relationship-query"
+                                type="search"
+                                placeholder="Try “place” or “to do”"
+                                autocomplete="off"
+                                aria-controls="details-relationship-suggestions"
+                                data-media-id=(media_id)
+                                data-return-to=(return_to.unwrap_or_default())
+                                data-bind:detailrelationshipquery=""
+                                data-on:input="@get('/media/details/relationship-search?media_id='+encodeURIComponent(el.dataset.mediaId)+'&prefix='+encodeURIComponent($detailrelationshipquery)+'&return_to='+encodeURIComponent(el.dataset.returnTo))";
+                            div
+                                id="details-relationship-suggestions"
+                                class="details-relationship-suggestions"
+                                role="status"
+                                aria-live="polite" {
+                                p class="explore-hint" { "Search for a relationship to add one of its tags." }
+                            }
+                            div
+                                id="details-relationship-tags"
+                                class="details-relationship-tags"
+                                aria-live="polite" {
+                                p class="explore-hint" { "Choose a relationship to see available tags." }
+                            }
+                        }
+                        form class="details-create-tag-pair" method="post" action="/media/details/tag" {
+                            input type="hidden" name="media_id" value=(media_id);
+                            @if let Some(return_to) = return_to {
+                                input type="hidden" name="return_to" value=(return_to);
+                            }
+                            fieldset {
+                                legend { "Create a relationship and tag" }
+                                p class="processed-hint" {
+                                    "Both fields are required; the pair is added to this item immediately."
+                                }
+                                label for="details-new-relationship" { "Relationship" }
+                                input
+                                    id="details-new-relationship"
+                                    name="relationship"
+                                    type="text"
+                                    placeholder="e.g. location"
+                                    required;
+                                label for="details-new-tag" { "Tag" }
+                                input
+                                    id="details-new-tag"
+                                    name="tag"
+                                    type="text"
+                                    placeholder="e.g. kitchen"
+                                    required;
+                                button type="submit" class="operation-button" { "Add pair" }
+                            }
                         }
                     }
                 }
@@ -927,6 +1036,114 @@ pub fn render_details(media: &Media, tags: &[Tag]) -> Markup {
             script src="/media.js" {}
         },
     )
+}
+
+pub fn details_picker_suggestions(
+    media_id: &str,
+    prefix: &str,
+    relationships: &[String],
+    return_to: Option<&str>,
+) -> Markup {
+    html! {
+        div id="details-relationship-suggestions" class="details-relationship-suggestions" role="status" aria-live="polite" {
+            @if prefix.trim().is_empty() {
+                p class="explore-hint" { "Search for a relationship to add one of its tags." }
+            } @else if relationships.is_empty() {
+                p class="explore-hint" { "No relationships match “" (prefix) "”." }
+            } @else {
+                p class="suggestion-count" {
+                    "RELATIONSHIPS"
+                    span { (relationships.len()) }
+                }
+                ul class="relationship-option-list" {
+                    @for relationship in relationships {
+                        li {
+                            button
+                                type="button"
+                                class="relationship-option"
+                                data-media-id=(media_id)
+                                data-relationship=(relationship)
+                                data-return-to=(return_to.unwrap_or_default())
+                                data-on:click="@get('/media/details/relationship?media_id='+encodeURIComponent(el.dataset.mediaId)+'&name='+encodeURIComponent(el.dataset.relationship)+'&return_to='+encodeURIComponent(el.dataset.returnTo))" {
+                                span { (relationship) }
+                                span class="relationship-option-arrow" aria-hidden="true" { "↗" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn details_picker_error(message: &str) -> Markup {
+    html! {
+        div id="details-relationship-suggestions" class="details-relationship-suggestions" role="alert" {
+            p class="details-tag-error" { (message) }
+        }
+    }
+}
+
+pub fn details_picker_tags_error(message: &str) -> Markup {
+    html! {
+        div id="details-relationship-tags" class="details-relationship-tags" role="alert" {
+            p class="details-tag-error" { (message) }
+        }
+    }
+}
+
+pub fn details_picker_tags(
+    media_id: &str,
+    relationship: &str,
+    tags: &[Tag],
+    existing_pairs: &[(String, String)],
+    return_to: Option<&str>,
+) -> Markup {
+    let available = tags
+        .iter()
+        .filter(|tag| {
+            !existing_pairs
+                .iter()
+                .any(|(existing_relationship, tag_id)| {
+                    existing_relationship == relationship && tag_id == tag.id()
+                })
+        })
+        .collect::<Vec<_>>();
+    html! {
+        div id="details-relationship-tags" class="details-relationship-tags" aria-live="polite" {
+            article class="relationship-result-card details-picker-result-card" {
+                div class="relationship-result-heading" {
+                    div {
+                        p class="eyebrow" { "RELATIONSHIP" }
+                        h3 { (relationship) }
+                    }
+                    span class="relationship-tag-count" { (available.len()) " available" }
+                }
+                @if available.is_empty() {
+                    p class="explore-hint" { "All tags in this relationship are already associated with this item." }
+                } @else {
+                    div class="relationship-tag-grid" {
+                        @for tag in available {
+                            form method="post" action="/media/details/tag" {
+                                input type="hidden" name="media_id" value=(media_id);
+                                @if let Some(return_to) = return_to {
+                                    input type="hidden" name="return_to" value=(return_to);
+                                }
+                                input type="hidden" name="relationship" value=(relationship);
+                                input type="hidden" name="tag" value=(tag.name());
+                                button
+                                    type="submit"
+                                    class="relationship-tag-card media-picker-tag" {
+                                    span class="relationship-tag-mark" aria-hidden="true" { "+" }
+                                    strong { (tag.name()) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn media_card(item: &Media) -> Markup {

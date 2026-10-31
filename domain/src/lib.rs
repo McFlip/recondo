@@ -3,7 +3,7 @@ pub mod model;
 pub mod qry;
 pub mod repository;
 
-pub use cmd::{AddTagError, CreateMediaError};
+pub use cmd::{AddTagError, CreateMediaError, RemoveTagError};
 pub use qry::{
     CountedTag, EnrichedQueryError, MediaQueryItems, MediaQueryResult, RelationshipTagGroup,
     filter_out_tags, get_enriched_media_by_logical_and, get_enriched_media_by_logical_and_then_or,

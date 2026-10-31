@@ -256,6 +256,89 @@ impl TagRepository for RedbMediaRepository {
         Ok(())
     }
 
+    fn remove_tag_edge(
+        &self,
+        media_id: &str,
+        tag_id: &str,
+        relationship: &str,
+    ) -> Result<(), Self::Error> {
+        let relationship = normalize_relationship(relationship);
+        if relationship.is_empty() {
+            return Err(AddTagEdgeError::repository(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "relationship must not be empty",
+            )));
+        }
+        let write_txn = self
+            .database()
+            .begin_write()
+            .map_err(AddTagEdgeError::repository)?;
+        {
+            let media_edge = (relationship.clone(), tag_id.to_string());
+            let mut media_table = write_txn
+                .open_table(MEDIA_ADJ_LST)
+                .map_err(AddTagEdgeError::repository)?;
+            let existing_media = media_table
+                .get(media_id)
+                .map_err(AddTagEdgeError::repository)?
+                .ok_or(AddTagEdgeError::MediaNotFound)?
+                .value();
+            let mut edges = existing_media;
+            edges.retain(|edge| edge != &media_edge);
+            media_table
+                .insert(media_id, edges)
+                .map_err(AddTagEdgeError::repository)?;
+
+            let tag_edge = (relationship.clone(), media_id.to_string());
+            let mut tag_table = write_txn
+                .open_table(TAG_ADJ_LST)
+                .map_err(AddTagEdgeError::repository)?;
+            let existing_tag = tag_table
+                .get(tag_id)
+                .map_err(AddTagEdgeError::repository)?
+                .map(|value| value.value())
+                .unwrap_or_default();
+            let mut edges = existing_tag;
+            edges.retain(|edge| edge != &tag_edge);
+            let relationship_still_used = edges
+                .iter()
+                .any(|(edge_relationship, _)| edge_relationship == &relationship);
+            if edges.is_empty() {
+                tag_table
+                    .remove(tag_id)
+                    .map_err(AddTagEdgeError::repository)?;
+            } else {
+                tag_table
+                    .insert(tag_id, edges)
+                    .map_err(AddTagEdgeError::repository)?;
+            }
+
+            if !relationship_still_used {
+                let mut relationship_table = write_txn
+                    .open_table(RELATIONSHIP_TO_TAGS)
+                    .map_err(AddTagEdgeError::repository)?;
+                let existing_tags = relationship_table
+                    .get(relationship.as_str())
+                    .map_err(AddTagEdgeError::repository)?
+                    .map(|value| value.value())
+                    .unwrap_or_default();
+                let mut tags = existing_tags;
+                tags.retain(|existing_tag_id| existing_tag_id != tag_id);
+                if tags.is_empty() {
+                    relationship_table
+                        .remove(relationship.as_str())
+                        .map_err(AddTagEdgeError::repository)?;
+                } else {
+                    relationship_table
+                        .insert(relationship.as_str(), tags)
+                        .map_err(AddTagEdgeError::repository)?;
+                }
+            }
+        }
+        write_txn.commit().map_err(AddTagEdgeError::repository)?;
+        Ok(())
+    }
+
     fn get_tag_adj_list(&self, tag_id: &str) -> Result<Option<Vec<(String, String)>>, Self::Error> {
         get_tag_adj_list(self.database(), tag_id).map_err(AddTagEdgeError::repository)
     }

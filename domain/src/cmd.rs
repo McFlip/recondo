@@ -210,6 +210,54 @@ pub fn add_tag_to_media<R: TagRepository>(
     Ok(tag)
 }
 
+#[derive(Debug)]
+pub enum RemoveTagError<E> {
+    EmptyMediaId,
+    EmptyTagId,
+    EmptyRelationship,
+    Repository(E),
+}
+
+impl<E: fmt::Display> fmt::Display for RemoveTagError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyMediaId => write!(f, "media id must not be empty"),
+            Self::EmptyTagId => write!(f, "tag id must not be empty"),
+            Self::EmptyRelationship => write!(f, "relationship must not be empty"),
+            Self::Repository(e) => write!(f, "repository error: {e}"),
+        }
+    }
+}
+
+impl<E: StdError + 'static> StdError for RemoveTagError<E> {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::EmptyMediaId | Self::EmptyTagId | Self::EmptyRelationship => None,
+            Self::Repository(e) => Some(e),
+        }
+    }
+}
+
+pub fn remove_tag_from_media<R: TagRepository>(
+    media_id: &str,
+    tag_id: &str,
+    relationship: &str,
+    repo: &R,
+) -> Result<(), RemoveTagError<R::Error>> {
+    if media_id.is_empty() {
+        return Err(RemoveTagError::EmptyMediaId);
+    }
+    if tag_id.is_empty() {
+        return Err(RemoveTagError::EmptyTagId);
+    }
+    let relationship = model::normalize_relationship(relationship);
+    if relationship.is_empty() {
+        return Err(RemoveTagError::EmptyRelationship);
+    }
+    repo.remove_tag_edge(media_id, tag_id, &relationship)
+        .map_err(RemoveTagError::Repository)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,6 +405,19 @@ mod tests {
             &self,
             _media_id: &str,
             _tag: &model::Tag,
+            _relationship: &str,
+        ) -> Result<(), Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn remove_tag_edge(
+            &self,
+            _media_id: &str,
+            _tag_id: &str,
             _relationship: &str,
         ) -> Result<(), Self::Error> {
             if self.error.is_some() {

@@ -259,8 +259,35 @@ h1 em, h2 em { color: var(--accent); font-family: var(--serif); font-weight: 500
 .media-details { max-width: 900px; margin: 0 auto; }
 .back-button { display: inline-block; margin-bottom: 16px; color: var(--accent); text-decoration: none; }
 .details-meta { margin-bottom: 20px; }
+.details-tag-management { margin: 28px 0; padding: 22px; border: 1px solid var(--line); background: rgb(24 27 22 / 78%); }
+.details-tag-management-heading h2 { margin-bottom: 18px; font-size: 24px; font-weight: 500; letter-spacing: -.04em; }
+.details-tag-management-heading .eyebrow { margin-bottom: 8px; }
+.details-tag-list { display: grid; gap: 12px; margin-bottom: 24px; }
+.details-tag-group { padding: 13px; border: 1px solid rgb(240 238 229 / 8%); }
+.details-tag-group h3 { margin: 0 0 10px; color: #d3d5ca; font-size: 13px; font-weight: 500; }
+.details-tag-pair { display: inline-flex; align-items: center; gap: 4px; }
+.details-tag-pair .tag-chip { display: inline-flex; align-items: center; min-height: 28px; }
+.details-tag-remove { display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid #3b4134; background: transparent; color: #d5d8ca; cursor: pointer; font-size: 17px; line-height: 1; }
+.details-tag-remove:hover { border-color: var(--accent); color: var(--accent); }
+.details-tag-notice, .details-tag-error { margin: 0 0 14px; padding: 10px 12px; border: 1px solid #465139; color: var(--accent); font-size: 12px; }
+.details-tag-error { border-color: #70443d; color: #f0a08d; }
+.details-tag-picker { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, .7fr); gap: 20px; }
+.details-existing-tag-picker, .details-create-tag-pair { min-width: 0; }
+.details-relationship-suggestions, .details-relationship-tags { margin-top: 10px; }
+.details-picker-result-card { margin-top: 12px; }
+.media-picker-tag { cursor: pointer; }
+.details-create-tag-pair fieldset { display: grid; gap: 9px; margin: 0; padding: 15px; border: 1px solid rgb(240 238 229 / 12%); }
+.details-create-tag-pair legend { padding-inline: 5px; color: #d3d5ca; font-size: 12px; }
+.details-create-tag-pair label { color: var(--muted); font-size: 11px; }
+.details-create-tag-pair input { width: 100%; min-height: 38px; padding: 0 10px; border: 1px solid #3b4134; background: #11130f; color: var(--ink); font: inherit; font-size: 12px; }
+.details-create-tag-pair button { justify-self: start; margin-top: 5px; }
 .details-image { width: 100%; cursor: zoom-in; }
 .details-image.full-size { width: auto; max-width: none; cursor: zoom-out; }
+
+@media (max-width: 680px) {
+  .details-tag-management { padding: 16px; }
+  .details-tag-picker { grid-template-columns: 1fr; }
+}
 
 .site-footer { min-height: 92px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-inline: max(24px, calc((100% - 1120px) / 2)); border-top: 1px solid var(--line); color: var(--muted); }
 .footer-wordmark { color: var(--ink); font-size: 15px; }

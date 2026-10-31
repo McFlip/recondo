@@ -745,6 +745,59 @@ mod tests {
     }
 
     #[test]
+    fn test_remove_tag_edge_prunes_relationship_index_only_when_unused() {
+        let base = temp_base("remove_relationship_index");
+        let src_a = base.join("a.txt");
+        let src_b = base.join("b.txt");
+        fs::write(&src_a, b"a").unwrap();
+        fs::write(&src_b, b"b").unwrap();
+
+        let db_path = base.join("test.redb");
+        let db = Database::create(&db_path).unwrap();
+        init_db(&db).unwrap();
+        let repo = RedbMediaRepository::new(db);
+
+        let media_a = make_test_media("remove_a");
+        let media_b = make_test_media("remove_b");
+        repo.save_media(&media_a, &src_a, &base.join("assets").join("remove_a.txt"))
+            .unwrap();
+        repo.save_media(&media_b, &src_b, &base.join("assets").join("remove_b.txt"))
+            .unwrap();
+
+        let shared_tag = Tag::new("shared").unwrap();
+        repo.add_tag_edge("remove_a", &shared_tag, "topic").unwrap();
+        repo.add_tag_edge("remove_b", &shared_tag, "topic").unwrap();
+        repo.add_tag_edge("remove_b", &shared_tag, "subject")
+            .unwrap();
+
+        repo.remove_tag_edge("remove_a", shared_tag.id(), "topic")
+            .unwrap();
+        assert_eq!(
+            repo.get_tags_by_relationship("topic")
+                .unwrap()
+                .unwrap()
+                .iter()
+                .map(|tag| tag.id().to_string())
+                .collect::<Vec<_>>(),
+            vec![shared_tag.id().to_string()]
+        );
+
+        repo.remove_tag_edge("remove_b", shared_tag.id(), "topic")
+            .unwrap();
+        assert_eq!(repo.get_tags_by_relationship("topic").unwrap(), None);
+        assert_eq!(
+            repo.get_tags_by_relationship("subject").unwrap().unwrap()[0].id(),
+            shared_tag.id()
+        );
+
+        repo.remove_tag_edge("remove_b", shared_tag.id(), "subject")
+            .unwrap();
+        assert_eq!(repo.get_tags_by_relationship("subject").unwrap(), None);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn test_upsert_relationship_tag_txn_normalization_and_empty() {
         let base = temp_base("relationship_normalize");
         let db_path = base.join("test.redb");

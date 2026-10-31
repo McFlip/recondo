@@ -9,7 +9,7 @@ use axum::{
     body::{Body, Bytes},
     extract::{DefaultBodyLimit, Multipart, Path, Query, RawQuery, State},
     http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Response, Sse},
+    response::{IntoResponse, Redirect, Response, Sse},
     routing::{get, post},
 };
 use datastar::{
@@ -17,7 +17,10 @@ use datastar::{
     prelude::{PatchElements, PatchSignals},
 };
 use recondo_dal::media::RedbMediaRepository;
-use recondo_domain::cmd::{CreateMediaOutcome, create_media_from_file_in_with_tags};
+use recondo_domain::cmd::{
+    CreateMediaOutcome, add_tag_to_media, create_media_from_file_in_with_tags,
+    remove_tag_from_media,
+};
 use recondo_domain::model::{MediaId, Tag, normalize_relationship};
 use recondo_domain::repository::{MediaRepository, TagRepository};
 use recondo_domain::{
@@ -48,6 +51,16 @@ pub fn router(state: AppState) -> Router {
         .route("/explore/submit", get(submit_relationship_search))
         .route("/media", get(media_page))
         .route("/media/details", get(media_details_page))
+        .route("/media/details/tag", post(add_media_detail_tag))
+        .route("/media/details/tag/remove", post(remove_media_detail_tag))
+        .route(
+            "/media/details/relationship-search",
+            get(media_detail_relationship_search),
+        )
+        .route(
+            "/media/details/relationship",
+            get(media_detail_relationship),
+        )
         .route("/media/relationship-search", get(media_picker_search))
         .route("/media/relationship", get(media_picker_relationship))
         .route(
@@ -183,38 +196,317 @@ async fn media_details_page(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let id = params.get("id").cloned().unwrap_or_default();
-    let Ok(media_id) = MediaId::from_hash(id) else {
+    let Ok(media_id) = MediaId::from_hash(id.clone()) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let repo = state.repo.clone();
+    let return_to = valid_media_return_url(params.get("return_to").map(String::as_str));
+    let repo = state.repo;
     let result = tokio::task::spawn_blocking(move || {
-        let media = repo.get_media(&media_id).map_err(|e| e.to_string())?;
-        let adj = repo
+        let media = repo
+            .get_media(&media_id)
+            .map_err(|error| error.to_string())?;
+        let Some(media) = media else {
+            return Ok(None);
+        };
+        let edges = repo
             .get_media_adj_list(&media_id)
-            .unwrap_or(None)
+            .map_err(|error| error.to_string())?
             .unwrap_or_default();
-        // resolve tag names grouped by relationship
-        let mut rels: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (r, _) in &adj {
-            rels.insert(r.clone());
-        }
-        let mut tags = Vec::new();
-        for r in &rels {
-            if let Ok(Some(ts)) = recondo_domain::get_tags_by_relationship(r, repo.as_ref()) {
-                tags.extend(ts);
+        let mut tag_pairs = Vec::new();
+        for (relationship, tag_id) in edges {
+            let tags = get_tags_by_relationship(&relationship, repo.as_ref())
+                .map_err(|error| error.to_string())?
+                .unwrap_or_default();
+            if let Some(tag) = tags.into_iter().find(|tag| tag.id() == tag_id) {
+                tag_pairs.push((relationship, tag));
             }
         }
-        // keep only those in adj
-        let ids: std::collections::HashSet<String> = adj.iter().map(|(_, t)| t.clone()).collect();
-        tags.retain(|t| ids.contains(t.id()));
-        Ok::<_, String>((media, tags))
+        Ok::<_, String>(Some((media, tag_pairs)))
     })
     .await;
     match result {
-        Ok(Ok((Some(media), tags))) => media::render_details(&media, &tags).into_response(),
-        _ => StatusCode::NOT_FOUND.into_response(),
+        Ok(Ok(Some((media_item, tag_pairs)))) => media::render_details(
+            &media_item,
+            &tag_pairs,
+            &id,
+            return_to,
+            params.get("notice").map(String::as_str),
+            params.get("error").map(String::as_str),
+        )
+        .into_response(),
+        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => {
+            eprintln!("Could not load media details for {id}: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(error) => {
+            eprintln!("Media details task failed for {id}: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
 }
+
+async fn add_media_detail_tag(State(state): State<AppState>, body: Bytes) -> Response {
+    let fields = match parse_form_fields(&body) {
+        Ok(fields) => fields,
+        Err(error) => {
+            eprintln!("Invalid media detail tag form: {error}");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+    let Some(media_id) = fields.get("media_id") else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Ok(media_id) = MediaId::from_hash(media_id.clone()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let return_to = valid_media_return_url(fields.get("return_to").map(String::as_str));
+    let Some(relationship) = fields.get("relationship") else {
+        return details_redirect(
+            &media_id,
+            return_to,
+            None,
+            Some("A relationship is required."),
+        );
+    };
+    let Some(tag_name) = fields.get("tag") else {
+        return details_redirect(&media_id, return_to, None, Some("A tag is required."));
+    };
+
+    let repo = state.repo;
+    let command_media_id = media_id.as_str().to_string();
+    let relationship = relationship.clone();
+    let tag_name = tag_name.clone();
+    match tokio::task::spawn_blocking(move || {
+        add_tag_to_media(&command_media_id, &tag_name, &relationship, repo.as_ref())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(_)) => details_redirect(&media_id, return_to, Some("Tag added."), None),
+        Ok(Err(error)) => {
+            eprintln!("Could not add tag to media {}: {error}", media_id.as_str());
+            details_redirect(&media_id, return_to, None, Some(&error))
+        }
+        Err(error) => {
+            eprintln!(
+                "Media tag add task failed for {}: {error}",
+                media_id.as_str()
+            );
+            details_redirect(
+                &media_id,
+                return_to,
+                None,
+                Some("The tag could not be added. Please try again."),
+            )
+        }
+    }
+}
+
+async fn remove_media_detail_tag(State(state): State<AppState>, body: Bytes) -> Response {
+    let fields = match parse_form_fields(&body) {
+        Ok(fields) => fields,
+        Err(error) => {
+            eprintln!("Invalid media detail tag removal form: {error}");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+    let Some(media_id) = fields.get("media_id") else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Ok(media_id) = MediaId::from_hash(media_id.clone()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let return_to = valid_media_return_url(fields.get("return_to").map(String::as_str));
+    let Some(tag_id) = fields.get("tag_id") else {
+        return details_redirect(&media_id, return_to, None, Some("A tag is required."));
+    };
+    let Some(relationship) = fields.get("relationship") else {
+        return details_redirect(
+            &media_id,
+            return_to,
+            None,
+            Some("A relationship is required."),
+        );
+    };
+    let repo = state.repo;
+    let command_media_id = media_id.as_str().to_string();
+    let tag_id = tag_id.clone();
+    let relationship = relationship.clone();
+    match tokio::task::spawn_blocking(move || {
+        remove_tag_from_media(&command_media_id, &tag_id, &relationship, repo.as_ref())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(())) => details_redirect(&media_id, return_to, Some("Tag removed."), None),
+        Ok(Err(error)) => {
+            eprintln!(
+                "Could not remove tag from media {}: {error}",
+                media_id.as_str()
+            );
+            details_redirect(&media_id, return_to, None, Some(&error))
+        }
+        Err(error) => {
+            eprintln!(
+                "Media tag removal task failed for {}: {error}",
+                media_id.as_str()
+            );
+            details_redirect(
+                &media_id,
+                return_to,
+                None,
+                Some("The tag could not be removed. Please try again."),
+            )
+        }
+    }
+}
+
+fn parse_form_fields(body: &[u8]) -> Result<std::collections::HashMap<String, String>, String> {
+    let mut fields = std::collections::HashMap::new();
+    for (key, value) in url::form_urlencoded::parse(body) {
+        let key = key.into_owned();
+        if fields.insert(key.clone(), value.into_owned()).is_some() {
+            return Err(format!("duplicate form field {key:?}"));
+        }
+    }
+    Ok(fields)
+}
+
+fn valid_media_return_url(value: Option<&str>) -> Option<&str> {
+    let value = value?;
+    let is_media_url = value == "/media" || value.starts_with("/media?");
+    let has_unsafe_chars = value
+        .chars()
+        .any(|character| character.is_control() || matches!(character, '\\' | '#'));
+    (is_media_url && !has_unsafe_chars).then_some(value)
+}
+
+fn details_redirect(
+    media_id: &MediaId,
+    return_to: Option<&str>,
+    notice: Option<&str>,
+    error: Option<&str>,
+) -> Response {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("id", media_id.as_str());
+    if let Some(return_to) = return_to {
+        serializer.append_pair("return_to", return_to);
+    }
+    if let Some(notice) = notice {
+        serializer.append_pair("notice", notice);
+    }
+    if let Some(error) = error {
+        serializer.append_pair("error", error);
+    }
+    Redirect::to(&format!("/media/details?{}", serializer.finish())).into_response()
+}
+
+async fn media_detail_relationship_search(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let media_id_text = params.get("media_id").cloned().unwrap_or_default();
+    let prefix = params.get("prefix").cloned().unwrap_or_default();
+    let return_to = valid_media_return_url(params.get("return_to").map(String::as_str));
+    let Ok(media_id) = MediaId::from_hash(media_id_text.clone()) else {
+        return patch_response(
+            "#details-relationship-suggestions",
+            media::details_picker_error("Invalid media ID."),
+        );
+    };
+    let repo = state.repo;
+    let query_prefix = prefix.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        if repo
+            .get_media(&media_id)
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            return Err("Media item not found.".to_string());
+        }
+        get_relationships_by_prefix(&query_prefix, Some(12), repo.as_ref())
+            .map(|relationships| relationships.unwrap_or_default())
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    let markup = match result {
+        Ok(Ok(relationships)) => {
+            media::details_picker_suggestions(&media_id_text, &prefix, &relationships, return_to)
+        }
+        Ok(Err(error)) => {
+            eprintln!("Could not search detail-page relationships: {error}");
+            media::details_picker_error(&error)
+        }
+        Err(error) => {
+            eprintln!("Detail-page relationship search task failed: {error}");
+            media::details_picker_error("Relationship search failed. Please try again.")
+        }
+    };
+    patch_response("#details-relationship-suggestions", markup)
+}
+
+async fn media_detail_relationship(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let media_id_text = params.get("media_id").cloned().unwrap_or_default();
+    let relationship = params.get("name").cloned().unwrap_or_default();
+    let return_to = valid_media_return_url(params.get("return_to").map(String::as_str));
+    let Ok(media_id) = MediaId::from_hash(media_id_text.clone()) else {
+        return patch_response(
+            "#details-relationship-tags",
+            media::details_picker_tags_error("Invalid media ID."),
+        );
+    };
+    let relationship = normalize_relationship(&relationship);
+    if relationship.is_empty() {
+        return patch_response(
+            "#details-relationship-tags",
+            media::details_picker_tags_error("Choose a relationship to see its tags."),
+        );
+    }
+
+    let repo = state.repo;
+    let relationship_name = relationship.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        if repo
+            .get_media(&media_id)
+            .map_err(|error| error.to_string())?
+            .is_none()
+        {
+            return Err("Media item not found.".to_string());
+        }
+        let tags = get_tags_by_relationship(&relationship, repo.as_ref())
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        let existing_pairs = repo
+            .get_media_adj_list(&media_id)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        Ok::<_, String>((tags, existing_pairs))
+    })
+    .await;
+    let markup = match result {
+        Ok(Ok((tags, existing_pairs))) => media::details_picker_tags(
+            &media_id_text,
+            &relationship_name,
+            &tags,
+            &existing_pairs,
+            return_to,
+        ),
+        Ok(Err(error)) => {
+            eprintln!("Could not load detail-page relationship {relationship_name:?}: {error}");
+            media::details_picker_tags_error(&error)
+        }
+        Err(error) => {
+            eprintln!("Detail-page relationship lookup task failed: {error}");
+            media::details_picker_tags_error("Could not load tags. Please try again.")
+        }
+    };
+    patch_response("#details-relationship-tags", markup)
+}
+
 async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery) -> maud::Markup {
     let params = parse_media_query(raw_query.as_deref().unwrap_or_default());
     let repo = state.repo;
@@ -1302,7 +1594,9 @@ mod tests {
     use redb::Database;
     use tower::ServiceExt;
 
-    use super::{AppState, media, parse_media_query, parse_upload_tag_pair, router};
+    use super::{
+        AppState, media, parse_media_query, parse_upload_tag_pair, router, valid_media_return_url,
+    };
 
     /// Builds an `AppState` backed by a single temp dir (redb database +
     /// `assets/` subdir). The `TempDir` is returned so tests can keep it
@@ -1380,6 +1674,22 @@ mod tests {
         let single_or_group = parse_media_query("operation=or_then_and&group=tag-a,tag-b&limit=10");
         assert_eq!(single_or_group.operation, media::Operation::Or);
         assert_eq!(single_or_group.tag_ids, vec!["tag-a", "tag-b"]);
+    }
+
+    #[test]
+    fn validates_optional_media_return_urls() {
+        assert_eq!(
+            valid_media_return_url(Some("/media?tag=one&tag=two&limit=50")),
+            Some("/media?tag=one&tag=two&limit=50")
+        );
+        assert_eq!(valid_media_return_url(Some("/media")), Some("/media"));
+        assert_eq!(valid_media_return_url(None), None);
+        assert_eq!(valid_media_return_url(Some("/explore")), None);
+        assert_eq!(valid_media_return_url(Some("/media/other")), None);
+        assert_eq!(valid_media_return_url(Some("https://example.com/")), None);
+        assert_eq!(valid_media_return_url(Some("//example.com/")), None);
+        assert_eq!(valid_media_return_url(Some("/media?next=\\evil")), None);
+        assert_eq!(valid_media_return_url(Some("/media#fragment")), None);
     }
 
     #[tokio::test]

@@ -41,6 +41,12 @@ pub trait TagRepository {
         tag: &Tag,
         relationship: &str,
     ) -> Result<(), Self::Error>;
+    fn remove_tag_edge(
+        &self,
+        media_id: &str,
+        tag_id: &str,
+        relationship: &str,
+    ) -> Result<(), Self::Error>;
     fn get_tag_adj_list(&self, tag_id: &str) -> Result<Option<Vec<(String, String)>>, Self::Error>;
     fn get_relationships_by_prefix(
         &self,

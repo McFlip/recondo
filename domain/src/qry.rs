@@ -635,6 +635,18 @@ mod tests {
             Ok(())
         }
 
+        fn remove_tag_edge(
+            &self,
+            _media_id: &str,
+            _tag_id: &str,
+            _relationship: &str,
+        ) -> Result<(), Self::Error> {
+            if self.tag_should_fail {
+                return Err(MockError);
+            }
+            Ok(())
+        }
+
         fn get_tag_adj_list(
             &self,
             tag_id: &str,
@@ -739,6 +751,18 @@ mod tests {
             &self,
             _media_id: &str,
             _tag: &Tag,
+            _relationship: &str,
+        ) -> Result<(), Self::Error> {
+            if self.should_fail {
+                return Err(MockError);
+            }
+            Ok(())
+        }
+
+        fn remove_tag_edge(
+            &self,
+            _media_id: &str,
+            _tag_id: &str,
             _relationship: &str,
         ) -> Result<(), Self::Error> {
             if self.should_fail {

@@ -287,3 +287,114 @@ test('OR then AND supports editable groups and returns to OR for one group', asy
   expect(oneGroupUrl.searchParams.getAll('tag')).toHaveLength(2);
   await expect(page.locator('.media-tag-group')).toHaveCount(0);
 });
+
+test('clicking a details-page tag opens an AND search with only that tag', async ({ page }) => {
+  await seedMedia(page);
+  await page.goto('/explore');
+  await page.getByRole('searchbox').fill('to');
+  await page.getByRole('button', { name: 'to do' }).click();
+  await page.getByRole('link', { name: 'needs tags' }).click();
+  await page.getByLabel('DISPLAY LIMIT').selectOption('400');
+  await page.locator('.media-preview img').first().click();
+  await page.locator('#media-lightbox-open').click();
+
+  const tagLink = page.getByRole('link', { name: 'Search media tagged needs tags' });
+  const target = new URL(await tagLink.getAttribute('href')!, page.url());
+  const tagId = target.searchParams.get('tag');
+  expect(tagId).toBeTruthy();
+  expect(target.searchParams.getAll('tag')).toEqual([tagId]);
+  expect(target.searchParams.get('limit')).toBe('10');
+  expect(target.searchParams.has('operation')).toBe(false);
+
+  await tagLink.click();
+  await expect(page).toHaveURL(target.toString());
+  await expect(page.locator('.selected-tag-chip')).toContainText('needs tags');
+  await expect(page.locator('.selected-tag-chip')).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'AND', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+});
+
+test('media details can add, create, remove, and retain relationship-tag pairs', async ({
+  page,
+}) => {
+  await seedMedia(page);
+  await seedAdditionalTag(page);
+  await page.goto('/explore');
+  await page.getByRole('searchbox').fill('to');
+  await page.getByRole('button', { name: 'to do' }).click();
+  await page.getByRole('link', { name: 'needs tags' }).click();
+  await page.getByLabel('DISPLAY LIMIT').selectOption('400');
+  await page.getByRole('button', { name: 'OR', exact: true }).click();
+  await page.getByRole('searchbox', { name: 'SEARCH RELATIONSHIPS' }).fill('sub');
+  await page.getByRole('button', { name: 'subject', exact: true }).click();
+  await page.getByRole('link', { name: 'field note' }).click();
+  const mediaSearchUrl = page.url();
+  const mediaSearch = new URL(mediaSearchUrl);
+  const mediaReturnUrl = mediaSearch.pathname + mediaSearch.search;
+  expect(mediaSearch.searchParams.get('operation')).toBe('or');
+  expect(mediaSearch.searchParams.getAll('tag')).toHaveLength(2);
+  expect(mediaSearch.searchParams.get('limit')).toBe('400');
+
+  await page.locator('.media-preview img').first().click();
+  const detailsLink = await page.locator('#media-lightbox-open').getAttribute('href');
+  expect(new URL(detailsLink!, page.url()).searchParams.get('return_to')).toBe(mediaReturnUrl);
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL(/\/media\/details\?id=[a-f0-9]+&return_to=/);
+  const detailsUrl = new URL(page.url());
+  expect(detailsUrl.searchParams.get('return_to')).toBe(mediaReturnUrl);
+  await expect(
+    page.getByRole('link', { name: 'Back to results' }),
+  ).toHaveAttribute('href', mediaReturnUrl);
+
+  await page.locator('#details-relationship-query').fill('sub');
+  await page.getByRole('button', { name: 'subject', exact: true }).click();
+  await expect(page.locator('#details-relationship-tags')).toContainText('field note');
+  await page.getByRole('button', { name: 'field note' }).click();
+  await expect(page).toHaveURL(/notice=Tag\+added\./);
+  await expect(page.locator('.details-tag-group[aria-label="subject"]')).toContainText(
+    'field note',
+  );
+
+  await page.locator('#details-relationship-query').fill('sub');
+  await page.getByRole('button', { name: 'subject', exact: true }).click();
+  await expect(page.locator('#details-relationship-tags')).toContainText(
+    'All tags in this relationship are already associated with this item.',
+  );
+
+  const relationship = `detail-${randomUUID().slice(0, 8)}`;
+  const tag = `tag-${randomUUID().slice(0, 8)}`;
+  await page.getByLabel('Relationship', { exact: true }).fill(relationship);
+  await page.getByLabel('Tag', { exact: true }).fill(tag);
+  await page.getByRole('button', { name: 'Add pair' }).click();
+  await expect(page).toHaveURL(/notice=Tag\+added\./);
+  await expect(page.locator(`.details-tag-group[aria-label="${relationship}"]`)).toContainText(
+    tag,
+  );
+  await page.reload();
+  await expect(page.locator(`.details-tag-group[aria-label="${relationship}"]`)).toContainText(
+    tag,
+  );
+
+  await page.getByRole('button', { name: `Remove ${tag} under ${relationship}` }).click();
+  await expect(page).toHaveURL(/notice=Tag\+removed\./);
+  await expect(page.locator(`.details-tag-group[aria-label="${relationship}"]`)).toHaveCount(0);
+  await expect(page.locator('.details-tag-group[aria-label="subject"]')).toContainText(
+    'field note',
+  );
+  await expect(page.getByRole('link', { name: 'Back to results' })).toHaveAttribute(
+    'href',
+    mediaReturnUrl,
+  );
+  await page.getByRole('link', { name: 'Back to results' }).click();
+  await expect(page).toHaveURL(mediaSearchUrl);
+
+  const mediaId = detailsUrl.searchParams.get('id')!;
+  await page.goto(`/media/details?id=${mediaId}`);
+  await expect(page.getByRole('link', { name: 'Back to results' })).toHaveCount(0);
+  await page.goto(
+    `/media/details?id=${mediaId}&return_to=${encodeURIComponent('https://example.com/')}`,
+  );
+  await expect(page.getByRole('link', { name: 'Back to results' })).toHaveCount(0);
+});

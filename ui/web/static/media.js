@@ -1,6 +1,14 @@
 let currentLightboxIndex = -1;
 let currentMediaId = null;
 
+function mediaDetailsUrl(mediaId) {
+  const params = new URLSearchParams({ id: mediaId });
+  if (window.location.pathname === '/media') {
+    params.set('return_to', window.location.pathname + window.location.search);
+  }
+  return `/media/details?${params}`;
+}
+
 function getImageItems() {
   return Array.from(document.querySelectorAll('.media-preview img'));
 }
@@ -40,7 +48,7 @@ window.updateMediaLightbox = () => {
 
   const openBtn = document.getElementById('media-lightbox-open');
   if (openBtn) {
-    openBtn.href = currentMediaId ? `/media/details?id=${currentMediaId}` : '#';
+    openBtn.href = currentMediaId ? mediaDetailsUrl(currentMediaId) : '#';
   }
 
   if (prevBtn) {
@@ -86,7 +94,7 @@ document.addEventListener('keydown', (evt) => {
   } else if (evt.key === 'Enter') {
     evt.preventDefault();
     if (currentMediaId) {
-      window.location.href = `/media/details?id=${currentMediaId}`;
+      window.location.href = mediaDetailsUrl(currentMediaId);
     }
   }
 });

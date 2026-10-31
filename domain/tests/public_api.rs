@@ -128,6 +128,15 @@ impl TagRepository for TestRepo {
         Ok(())
     }
 
+    fn remove_tag_edge(
+        &self,
+        _media_id: &str,
+        _tag_id: &str,
+        _relationship: &str,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     fn get_tag_adj_list(&self, tag_id: &str) -> Result<Option<Vec<(String, String)>>, Self::Error> {
         Ok(self.tag_edges.get(tag_id).cloned())
     }
