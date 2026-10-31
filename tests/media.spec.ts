@@ -417,3 +417,19 @@ test('lightbox image loads on first open', async ({ page }) => {
     .toBe(true);
   await page.getByRole('button', { name: 'Close image' }).click();
 });
+
+test('media title can be edited from details page', async ({ page }) => {
+  await seedMedia(page);
+  await page.goto('/explore');
+  await page.getByRole('searchbox').fill('to');
+  await page.getByRole('button', { name: 'to do' }).click();
+  await page.getByRole('link', { name: 'needs tags' }).click();
+  await page.getByLabel('DISPLAY LIMIT').selectOption('400');
+  await page.locator('.media-preview img').first().click();
+  await page.locator('#media-lightbox-open').click();
+  await expect(page).toHaveURL(/\/media\/details\?id=/);
+  await page.locator('#details-media-title').fill('Edited Title');
+  await page.getByRole('button', { name: 'Update title' }).click();
+  await expect(page.locator('.details-tag-notice')).toContainText('Title updated');
+  await expect(page.locator('#details-media-title')).toHaveValue('Edited Title');
+});

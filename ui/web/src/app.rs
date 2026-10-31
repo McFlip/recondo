@@ -53,6 +53,7 @@ pub fn router(state: AppState) -> Router {
         .route("/media/details", get(media_details_page))
         .route("/media/details/tag", post(add_media_detail_tag))
         .route("/media/details/tag/remove", post(remove_media_detail_tag))
+        .route("/media/details/title", post(update_media_detail_title))
         .route(
             "/media/details/relationship-search",
             get(media_detail_relationship_search),
@@ -299,6 +300,54 @@ async fn add_media_detail_tag(State(state): State<AppState>, body: Bytes) -> Res
                 None,
                 Some("The tag could not be added. Please try again."),
             )
+        }
+    }
+}
+
+async fn update_media_detail_title(State(state): State<AppState>, body: Bytes) -> Response {
+    let fields = match parse_form_fields(&body) {
+        Ok(fields) => fields,
+        Err(error) => {
+            eprintln!("Invalid media title form: {error}");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+    let Some(media_id) = fields.get("media_id") else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Ok(media_id) = MediaId::from_hash(media_id.clone()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let return_to = valid_media_return_url(fields.get("return_to").map(String::as_str));
+    let title = fields.get("title").cloned().unwrap_or_default();
+    let title = {
+        let trimmed = title.trim();
+        if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    };
+
+    let repo = state.repo;
+    let command_media_id = media_id.as_str().to_string();
+    match tokio::task::spawn_blocking(move || {
+        let media = repo
+            .get_media(&MediaId::from_hash(command_media_id.clone()).unwrap())
+            .map_err(|error| error.to_string())?;
+        let Some(mut media) = media else {
+            return Err("media not found".to_string());
+        };
+        media.title = title;
+        repo.save_media_record(&media).map_err(|error| error.to_string())?;
+        Ok::<_, String>(())
+    })
+    .await
+    {
+        Ok(Ok(())) => details_redirect(&media_id, return_to, Some("Title updated."), None),
+        Ok(Err(error)) => {
+            eprintln!("Could not update title for media {}: {error}", media_id.as_str());
+            details_redirect(&media_id, return_to, None, Some("Could not update title."))
+        }
+        Err(error) => {
+            eprintln!("Media title update task failed for {}: {error}", media_id.as_str());
+            details_redirect(&media_id, return_to, None, Some("Could not update title."))
         }
     }
 }

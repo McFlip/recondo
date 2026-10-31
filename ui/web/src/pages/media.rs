@@ -1020,6 +1020,22 @@ pub fn render_details(
                         }
                     }
                 }
+                section class="details-title-management" aria-label="Edit media title" {
+                    form class="details-title-form" method="post" action="/media/details/title" {
+                        input type="hidden" name="media_id" value=(media_id);
+                        @if let Some(return_to) = return_to {
+                            input type="hidden" name="return_to" value=(return_to);
+                        }
+                        label for="details-media-title" { "Title" }
+                        input
+                            id="details-media-title"
+                            name="title"
+                            type="text"
+                            value=(media.title.clone().unwrap_or_default())
+                            placeholder="No title";
+                        button type="submit" class="operation-button" { "Update title" }
+                    }
+                }
                 div class="details-media" {
                     @if mime_type.starts_with("image/") {
                         img class="details-image" src=(asset_url) alt=(title) data-on:click="el.classList.toggle('full-size')" {}
