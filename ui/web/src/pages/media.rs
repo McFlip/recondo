@@ -13,6 +13,36 @@ pub enum Operation {
     And,
     Or,
     AndThenOr,
+    OrThenAnd,
+}
+
+impl Operation {
+    pub fn is_grouped(self) -> bool {
+        matches!(self, Self::AndThenOr | Self::OrThenAnd)
+    }
+
+    fn query_value(self) -> &'static str {
+        match self {
+            Self::And => "and",
+            Self::Or => "or",
+            Self::AndThenOr => "and_then_or",
+            Self::OrThenAnd => "or_then_and",
+        }
+    }
+
+    pub fn single_group_operation(self) -> Self {
+        match self {
+            Self::OrThenAnd => Self::Or,
+            _ => Self::And,
+        }
+    }
+
+    fn group_separator(self) -> &'static str {
+        match self {
+            Self::OrThenAnd => "AND Any Of",
+            _ => "OR All Of",
+        }
+    }
 }
 
 pub struct GroupState<'a> {
@@ -50,7 +80,7 @@ pub fn render(
                 div class="media-workspace" {
                     aside
                         class="media-sidebar"
-                        aria-label=(if matches!(operation, Operation::Or | Operation::AndThenOr) {
+                        aria-label=(if matches!(operation, Operation::Or) || operation.is_grouped() {
                             "Add tags"
                         } else {
                             "Related tags"
@@ -59,21 +89,21 @@ pub fn render(
                             p class="eyebrow" {
                                 @if operation == Operation::Or {
                                     "BUILD YOUR OR SEARCH"
-                                } @else if operation == Operation::AndThenOr {
+                                } @else if operation.is_grouped() {
                                     "BUILD YOUR GROUPS"
                                 } @else {
                                     "DISCOVER"
                                 }
                             }
                             h2 {
-                                @if matches!(operation, Operation::Or | Operation::AndThenOr) {
+                                @if matches!(operation, Operation::Or) || operation.is_grouped() {
                                     "Add tags"
                                 } @else {
                                     "Related tags"
                                 }
                             }
                         }
-                        @if matches!(operation, Operation::Or | Operation::AndThenOr) {
+                        @if matches!(operation, Operation::Or) || operation.is_grouped() {
                             (relationship_picker(
                                 &tag_ids,
                                 groups,
@@ -121,25 +151,24 @@ pub fn render(
                                             &tag_ids,
                                             limit,
                                         ))
-                                        (and_then_or_button(
+                                        (group_mode_button(
+                                            "AND then OR",
+                                            Operation::AndThenOr,
                                             &tag_ids,
                                             groups,
                                             add_to_groups,
                                             operation,
                                             limit,
                                         ))
-                                        button
-                                            type="button"
-                                            class="operation-button"
-                                            disabled
-                                            aria-pressed="false" {
-                                            "OR then AND"
-                                        }
-                                    }
-                                    @if operation != Operation::AndThenOr {
-                                        p class="media-control-note" {
-                                            "OR then AND is not functional yet."
-                                        }
+                                        (group_mode_button(
+                                            "OR then AND",
+                                            Operation::OrThenAnd,
+                                            &tag_ids,
+                                            groups,
+                                            add_to_groups,
+                                            operation,
+                                            limit,
+                                        ))
                                     }
                                 }
                                 form class="limit-control" method="get" action="/media" {
@@ -167,8 +196,14 @@ pub fn render(
 
                             section class="selected-tags-section" aria-label="Selected tags" {
                                 p class="media-control-label" { "SELECTED TAGS" }
-                                @if operation == Operation::AndThenOr {
-                                    (group_editor(selected_tags, groups, add_to_groups, limit))
+                                @if operation.is_grouped() {
+                                    (group_editor(
+                                        selected_tags,
+                                        groups,
+                                        add_to_groups,
+                                        limit,
+                                        operation,
+                                    ))
                                 } @else if selected_tags.is_empty() {
                                     p class="media-muted" { "No tags selected" }
                                 } @else {
@@ -273,12 +308,13 @@ fn group_editor(
     groups: &[Vec<String>],
     add_to_groups: &[usize],
     limit: usize,
+    operation: Operation,
 ) -> Markup {
     html! {
         div class="media-groups" {
             @for (index, group) in groups.iter().enumerate() {
                 @if index > 0 {
-                    p class="media-group-operator" { "OR All Of" }
+                    p class="media-group-operator" { (operation.group_separator()) }
                 }
                 section class="media-tag-group" aria-label=(format!("Group {}", index + 1)) {
                     div class="media-tag-group-heading" {
@@ -286,7 +322,7 @@ fn group_editor(
                             class="media-group-target-form"
                             method="get"
                             action="/media" {
-                            input type="hidden" name="operation" value="and_then_or";
+                            input type="hidden" name="operation" value=(operation.query_value());
                             input type="hidden" name="limit" value=(limit_value(limit));
                             @for group in groups {
                                 input type="hidden" name="group" value=(group.join(","));
@@ -308,7 +344,7 @@ fn group_editor(
                         }
                         a
                             class="media-group-delete"
-                            href=(delete_group_url(groups, add_to_groups, index, limit))
+                            href=(delete_group_url(groups, add_to_groups, index, limit, operation))
                             aria-label=(format!("Delete group {}", index + 1))
                             title="Delete group" {
                             svg class="media-trash-icon" viewBox="0 0 24 24" aria-hidden="true" {
@@ -322,14 +358,21 @@ fn group_editor(
                         div class="selected-tag-list" {
                             @for id in group {
                                 @if let Some(tag) = selected_tags.iter().find(|tag| tag.id() == id) {
-                                    (grouped_selected_tag(tag, groups, add_to_groups, index, limit))
+                                    (grouped_selected_tag(
+                                        tag,
+                                        groups,
+                                        add_to_groups,
+                                        index,
+                                        limit,
+                                        operation,
+                                    ))
                                 }
                             }
                         }
                     }
                 }
             }
-            (add_group_button(groups, add_to_groups, limit))
+            (add_group_button(groups, add_to_groups, limit, operation))
         }
     }
 }
@@ -340,12 +383,13 @@ fn grouped_selected_tag(
     add_to_groups: &[usize],
     group_index: usize,
     limit: usize,
+    operation: Operation,
 ) -> Markup {
     let mut remaining_groups = groups.to_vec();
     remaining_groups[group_index].retain(|id| id != tag.id());
     let has_tags = remaining_groups.iter().any(|group| !group.is_empty());
     let href = if has_tags {
-        group_state_url(&remaining_groups, add_to_groups, limit)
+        group_state_url(&remaining_groups, add_to_groups, limit, operation)
     } else {
         "/explore".to_string()
     };
@@ -388,9 +432,14 @@ fn selected_tag(tag: &Tag, selected_ids: &[String], limit: usize, operation: Ope
     }
 }
 
-fn group_state_url(groups: &[Vec<String>], add_to_groups: &[usize], limit: usize) -> String {
+fn group_state_url(
+    groups: &[Vec<String>],
+    add_to_groups: &[usize],
+    limit: usize,
+    operation: Operation,
+) -> String {
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-    serializer.append_pair("operation", "and_then_or");
+    serializer.append_pair("operation", operation.query_value());
     for group in groups {
         serializer.append_pair("group", &group.join(","));
     }
@@ -401,14 +450,19 @@ fn group_state_url(groups: &[Vec<String>], add_to_groups: &[usize], limit: usize
     format!("/media?{}", serializer.finish())
 }
 
-fn add_group_button(groups: &[Vec<String>], add_to_groups: &[usize], limit: usize) -> Markup {
+fn add_group_button(
+    groups: &[Vec<String>],
+    add_to_groups: &[usize],
+    limit: usize,
+    operation: Operation,
+) -> Markup {
     let mut groups = groups.to_vec();
     groups.push(Vec::new());
     let mut add_to_groups = add_to_groups.to_vec();
     add_to_groups.push(groups.len() - 1);
     html! {
         form class="media-add-group-form" method="get" action="/media" {
-            (hidden_search_state(&[], &groups, &add_to_groups, Operation::AndThenOr))
+            (hidden_search_state(&[], &groups, &add_to_groups, operation))
             input type="hidden" name="limit" value=(limit_value(limit));
             button
                 type="submit"
@@ -425,6 +479,7 @@ fn delete_group_url(
     add_to_groups: &[usize],
     index: usize,
     limit: usize,
+    operation: Operation,
 ) -> String {
     let mut remaining_groups = groups.to_vec();
     remaining_groups.remove(index);
@@ -433,7 +488,7 @@ fn delete_group_url(
         if first_group.is_empty() {
             return "/explore".to_string();
         }
-        return media_url(&first_group, limit, Operation::And);
+        return media_url(&first_group, limit, operation.single_group_operation());
     }
     let remaining_targets = add_to_groups
         .iter()
@@ -443,7 +498,7 @@ fn delete_group_url(
             std::cmp::Ordering::Equal => None,
         })
         .collect::<Vec<_>>();
-    group_state_url(&remaining_groups, &remaining_targets, limit)
+    group_state_url(&remaining_groups, &remaining_targets, limit, operation)
 }
 
 fn media_url(tag_ids: &[String], limit: usize, operation: Operation) -> String {
@@ -459,6 +514,9 @@ fn media_url(tag_ids: &[String], limit: usize, operation: Operation) -> String {
         Operation::AndThenOr => {
             serializer.append_pair("operation", "and_then_or");
         }
+        Operation::OrThenAnd => {
+            serializer.append_pair("operation", "or_then_and");
+        }
         Operation::And => {}
     }
     format!("/media?{}", serializer.finish())
@@ -471,8 +529,8 @@ fn hidden_search_state(
     operation: Operation,
 ) -> Markup {
     html! {
-        @if operation == Operation::AndThenOr {
-            input type="hidden" name="operation" value="and_then_or";
+        @if operation.is_grouped() {
+            input type="hidden" name="operation" value=(operation.query_value());
             @for group in groups {
                 input type="hidden" name="group" value=(group.join(","));
             }
@@ -517,27 +575,29 @@ fn operation_button(
     }
 }
 
-fn and_then_or_button(
+fn group_mode_button(
+    label: &str,
+    target: Operation,
     tag_ids: &[String],
     groups: &[Vec<String>],
     add_to_groups: &[usize],
     current: Operation,
     limit: usize,
 ) -> Markup {
-    let groups = if current == Operation::AndThenOr {
+    let groups = if current == target {
         groups.to_vec()
     } else {
         vec![tag_ids.to_vec(), Vec::new()]
     };
-    let targets = if current == Operation::AndThenOr {
+    let targets = if current == target {
         add_to_groups.to_vec()
     } else {
         vec![0]
     };
-    let active = current == Operation::AndThenOr;
+    let active = current == target;
     html! {
         form class="operation-form" method="get" action="/media" {
-            input type="hidden" name="operation" value="and_then_or";
+            input type="hidden" name="operation" value=(target.query_value());
             input type="hidden" name="limit" value=(limit_value(limit));
             @for group in &groups {
                 input type="hidden" name="group" value=(group.join(","));
@@ -549,7 +609,7 @@ fn and_then_or_button(
                 type="submit"
                 class=(if active { "operation-button is-selected" } else { "operation-button" })
                 aria-pressed=(active) {
-                "AND then OR"
+                (label)
             }
         }
     }
@@ -568,7 +628,9 @@ fn query_results(items: &MediaQueryItems, operation: Operation) -> Markup {
             p class="media-empty-state" {
                 @if operation == Operation::Or {
                     "No media matches any selected tags."
-                } @else if operation == Operation::AndThenOr {
+                } @else if operation == Operation::OrThenAnd {
+                    "No media matches all selected groups."
+                } @else if operation.is_grouped() {
                     "No media matches any of the selected groups."
                 } @else {
                     "No media matches all selected tags."
@@ -698,7 +760,7 @@ pub fn picker_relationship_tags(
                 }
                 @if available.is_empty() {
                     p class="explore-hint" { "No unselected tags are available in this relationship." }
-                } @else if operation == Operation::AndThenOr && add_to_groups.is_empty() {
+                } @else if operation.is_grouped() && add_to_groups.is_empty() {
                     p class="explore-hint" { "Choose one or more groups to add tags to." }
                 } @else {
                     div class="relationship-tag-grid" {
@@ -706,8 +768,14 @@ pub fn picker_relationship_tags(
                             a
                                 class="relationship-tag-card media-picker-tag"
                                 data-testid="or-picker-tag"
-                                href=(if operation == Operation::AndThenOr {
-                                    add_tag_to_groups_url(groups, add_to_groups, tag.id(), limit)
+                                href=(if operation.is_grouped() {
+                                    add_tag_to_groups_url(
+                                        groups,
+                                        add_to_groups,
+                                        tag.id(),
+                                        limit,
+                                        operation,
+                                    )
                                 } else {
                                     media_url(
                                         &selected_ids
@@ -740,8 +808,8 @@ fn picker_state_query(
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
     serializer.append_pair("limit", &limit_value(limit));
     match operation {
-        Operation::AndThenOr => {
-            serializer.append_pair("operation", "and_then_or");
+        Operation::AndThenOr | Operation::OrThenAnd => {
+            serializer.append_pair("operation", operation.query_value());
             for group in groups {
                 serializer.append_pair("group", &group.join(","));
             }
@@ -761,6 +829,7 @@ fn add_tag_to_groups_url(
     add_to_groups: &[usize],
     tag_id: &str,
     limit: usize,
+    operation: Operation,
 ) -> String {
     let mut updated_groups = groups.to_vec();
     for index in add_to_groups {
@@ -770,7 +839,7 @@ fn add_tag_to_groups_url(
             group.push(tag_id.to_string());
         }
     }
-    group_state_url(&updated_groups, add_to_groups, limit)
+    group_state_url(&updated_groups, add_to_groups, limit, operation)
 }
 
 fn limit_value(limit: usize) -> String {

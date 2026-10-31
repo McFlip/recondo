@@ -22,8 +22,8 @@ use recondo_domain::model::{MediaId, Tag, normalize_relationship};
 use recondo_domain::repository::{MediaRepository, TagRepository};
 use recondo_domain::{
     get_enriched_media_by_logical_and, get_enriched_media_by_logical_and_then_or,
-    get_enriched_media_by_logical_or, get_relationships_by_prefix, get_tag_adj_list,
-    get_tags_by_relationship,
+    get_enriched_media_by_logical_or, get_enriched_media_by_logical_or_then_and,
+    get_relationships_by_prefix, get_tag_adj_list, get_tags_by_relationship,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio_stream::iter;
@@ -254,6 +254,9 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
             media::Operation::AndThenOr => {
                 get_enriched_media_by_logical_and_then_or(&groups, limit, repo.as_ref())
             }
+            media::Operation::OrThenAnd => {
+                get_enriched_media_by_logical_or_then_and(&groups, limit, repo.as_ref())
+            }
         }
         .map_err(|error| error.to_string())?;
         let selected_tags = selected_tag_labels(&tag_ids, repo.as_ref())?;
@@ -360,18 +363,19 @@ fn parse_media_query(query: &str) -> MediaQueryParams {
                 operation = match value.as_ref() {
                     "or" => media::Operation::Or,
                     "and_then_or" => media::Operation::AndThenOr,
+                    "or_then_and" => media::Operation::OrThenAnd,
                     _ => media::Operation::And,
                 };
             }
             _ => {}
         }
     }
-    if operation == media::Operation::AndThenOr {
+    if operation.is_grouped() {
         if groups.is_empty() {
             groups.push(tag_ids.clone());
             groups.push(Vec::new());
         } else if groups.len() == 1 {
-            operation = media::Operation::And;
+            operation = operation.single_group_operation();
             tag_ids = groups.pop().unwrap_or_default();
         } else {
             tag_ids.clear();
@@ -442,8 +446,12 @@ fn parse_media_picker_query(query: &str) -> MediaPickerParams {
                     params.add_to_groups.push(index);
                 }
             }
-            "operation" if value == "and_then_or" => {
-                params.operation = media::Operation::AndThenOr;
+            "operation" => {
+                params.operation = match value.as_ref() {
+                    "and_then_or" => media::Operation::AndThenOr,
+                    "or_then_and" => media::Operation::OrThenAnd,
+                    _ => params.operation,
+                };
             }
             "limit" => {
                 params.limit = if value == "unlimited" {
@@ -459,7 +467,7 @@ fn parse_media_picker_query(query: &str) -> MediaPickerParams {
             _ => {}
         }
     }
-    if params.operation == media::Operation::AndThenOr {
+    if params.operation.is_grouped() {
         for group in &params.groups {
             for id in group {
                 if !params.selected_ids.contains(id) {
@@ -1359,6 +1367,19 @@ mod tests {
         let single_group = parse_media_query("operation=and_then_or&group=tag-a&limit=10");
         assert_eq!(single_group.operation, media::Operation::And);
         assert_eq!(single_group.tag_ids, vec!["tag-a"]);
+
+        let or_then_and = parse_media_query(
+            "operation=or_then_and&group=tag-a,tag-b&group=tag-c&target=1&limit=50",
+        );
+        assert_eq!(or_then_and.operation, media::Operation::OrThenAnd);
+        assert_eq!(or_then_and.groups.len(), 2);
+        assert_eq!(or_then_and.tag_ids, vec!["tag-a", "tag-b", "tag-c"]);
+        assert_eq!(or_then_and.add_to_groups, vec![1]);
+        assert_eq!(or_then_and.limit, 50);
+
+        let single_or_group = parse_media_query("operation=or_then_and&group=tag-a,tag-b&limit=10");
+        assert_eq!(single_or_group.operation, media::Operation::Or);
+        assert_eq!(single_or_group.tag_ids, vec!["tag-a", "tag-b"]);
     }
 
     #[tokio::test]
@@ -1644,7 +1665,6 @@ mod tests {
         assert!(html.contains("topic tag"));
         assert!(html.contains("needs tags"));
         assert!(html.contains("DISPLAY LIMIT"));
-        assert!(html.contains("OR then AND is not functional yet."));
         assert!(html.contains(&format!("href=\"/media?tag={other_tag_id}&amp;limit=25\"")));
         assert!(html.contains("Download file"));
         assert!(html.contains("data-on:change"));
@@ -1697,6 +1717,55 @@ mod tests {
         assert!(html.contains(&format!("/asset/{}", second_media.id.as_str())));
         assert!(html.contains("OR All Of"));
         assert!(html.contains("Add new tags to this group"));
+    }
+
+    #[tokio::test]
+    async fn media_or_then_and_query_matches_any_tag_per_group_and_all_groups() {
+        let (state, temp) = test_app_state();
+        let first_media_id = seed_explore_relationships(&state, &temp);
+        let second_source = temp.path().join("or-then-and-second-media.txt");
+        std::fs::write(&second_source, "second OR then AND query media").unwrap();
+        let second_media = match create_media_from_file_in(
+            second_source,
+            &temp.path().join("assets"),
+            state.repo.as_ref(),
+        )
+        .unwrap()
+        {
+            CreateMediaOutcome::Created(media) => media,
+            CreateMediaOutcome::Duplicate(_) => panic!("test media should be unique"),
+        };
+        add_tag_to_media(
+            second_media.id.as_str(),
+            "another subject",
+            "subject",
+            state.repo.as_ref(),
+        )
+        .unwrap();
+
+        let field_note_id = Tag::new("field note").unwrap().id().to_string();
+        let topic_tag_id = Tag::new("topic tag").unwrap().id().to_string();
+        let needs_tags_id = Tag::new("needs tags").unwrap().id().to_string();
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/media?operation=or_then_and&group={field_note_id},{topic_tag_id}&group={needs_tags_id}&target=0&limit=10"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+
+        assert_eq!(html.matches("data-testid=\"media-card\"").count(), 1);
+        assert!(html.contains(&format!("/asset/{first_media_id}")));
+        assert!(!html.contains(&format!("/asset/{}", second_media.id.as_str())));
+        assert!(html.contains("AND Any Of"));
+        assert!(html.contains("value=\"or_then_and\""));
     }
 
     #[tokio::test]

@@ -49,10 +49,6 @@ test('Explore tags open media results with removable selection and media viewers
   await expect(page.getByLabel('DISPLAY LIMIT')).toHaveValue('10');
   await expect(page.getByRole('button', { name: 'AND', exact: true })).toBeEnabled();
   await expect(page.getByRole('button', { name: 'OR', exact: true })).toBeEnabled();
-  await expect(
-    page.getByText('OR then AND is not functional yet.', { exact: true }),
-  ).toBeVisible();
-
   await page.setViewportSize({ width: 390, height: 844 });
   expect(
     await page.locator('.media-workspace').evaluate(
@@ -233,4 +229,61 @@ test('AND then OR supports editable groups and preserves their URL state', async
   expect(orUrl.searchParams.get('operation')).toBe('or');
   expect(orUrl.searchParams.getAll('group')).toHaveLength(0);
   expect(orUrl.searchParams.getAll('tag')).toHaveLength(2);
+});
+
+test('OR then AND supports editable groups and returns to OR for one group', async ({
+  page,
+}) => {
+  await seedMedia(page);
+  await seedAdditionalTag(page);
+  await page.goto('/explore');
+  await page.getByRole('searchbox').fill('to');
+  await page.getByRole('button', { name: 'to do' }).click();
+  await page.getByRole('link', { name: 'needs tags' }).click();
+
+  await page.getByRole('button', { name: 'OR then AND', exact: true }).click();
+  const groupedUrl = new URL(page.url());
+  expect(groupedUrl.searchParams.get('operation')).toBe('or_then_and');
+  expect(groupedUrl.searchParams.getAll('group')).toHaveLength(2);
+  expect(groupedUrl.searchParams.getAll('target')).toEqual(['0']);
+  await expect(page.locator('.media-tag-group')).toHaveCount(2);
+  await expect(page.getByText('AND Any Of', { exact: true })).toBeVisible();
+
+  await page
+    .getByRole('checkbox', { name: 'Add new tags to this group' })
+    .nth(0)
+    .uncheck();
+  await page
+    .getByRole('checkbox', { name: 'Add new tags to this group' })
+    .nth(1)
+    .check();
+  await page.getByRole('searchbox', { name: 'SEARCH RELATIONSHIPS' }).fill('sub');
+  await page.getByRole('button', { name: 'subject' }).click();
+  await page.getByRole('link', { name: 'field note' }).click();
+
+  const taggedGroupsUrl = new URL(page.url());
+  const taggedGroups = taggedGroupsUrl.searchParams.getAll('group');
+  const fieldNoteId = await page.locator('.media-tag-group .selected-tag-chip')
+    .filter({ hasText: 'field note' })
+    .getAttribute('data-tag-id');
+  expect(taggedGroups).toHaveLength(2);
+  expect(taggedGroups[0]).not.toContain(fieldNoteId);
+  expect(taggedGroups[1]).toContain(fieldNoteId);
+
+  await page.getByRole('button', { name: 'AND', exact: true }).click();
+  const convertedAndUrl = new URL(page.url());
+  expect(convertedAndUrl.searchParams.getAll('tag')).toHaveLength(2);
+  expect(convertedAndUrl.searchParams.getAll('tag')).toContain(fieldNoteId);
+  expect(convertedAndUrl.searchParams.getAll('group')).toHaveLength(0);
+
+  await page.getByRole('button', { name: 'OR then AND', exact: true }).click();
+  await page.getByRole('button', { name: 'Add group' }).click();
+  await expect(page.locator('.media-tag-group')).toHaveCount(3);
+  await expect(page.getByText('AND Any Of', { exact: true })).toHaveCount(2);
+  await page.getByRole('link', { name: 'Delete group 3' }).click();
+  await page.getByRole('link', { name: 'Delete group 2' }).click();
+  const oneGroupUrl = new URL(page.url());
+  expect(oneGroupUrl.searchParams.get('operation')).toBe('or');
+  expect(oneGroupUrl.searchParams.getAll('tag')).toHaveLength(2);
+  await expect(page.locator('.media-tag-group')).toHaveCount(0);
 });
