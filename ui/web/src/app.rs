@@ -21,8 +21,9 @@ use recondo_domain::cmd::{CreateMediaOutcome, create_media_from_file_in_with_tag
 use recondo_domain::model::{MediaId, Tag, normalize_relationship};
 use recondo_domain::repository::{MediaRepository, TagRepository};
 use recondo_domain::{
-    get_enriched_media_by_logical_and, get_enriched_media_by_logical_or,
-    get_relationships_by_prefix, get_tag_adj_list, get_tags_by_relationship,
+    get_enriched_media_by_logical_and, get_enriched_media_by_logical_and_then_or,
+    get_enriched_media_by_logical_or, get_relationships_by_prefix, get_tag_adj_list,
+    get_tags_by_relationship,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio_stream::iter;
@@ -46,7 +47,7 @@ pub fn router(state: AppState) -> Router {
         .route("/explore/relationship", get(show_relationship))
         .route("/explore/submit", get(submit_relationship_search))
         .route("/media", get(media_page))
-.route("/media/details", get(media_details_page))
+        .route("/media/details", get(media_details_page))
         .route("/media/relationship-search", get(media_picker_search))
         .route("/media/relationship", get(media_picker_relationship))
         .route(
@@ -177,18 +178,26 @@ async fn explore_page() -> maud::Markup {
     explore::render()
 }
 
-async fn media_details_page(State(state): State<AppState>, Query(params): Query<std::collections::HashMap<String, String>>) -> impl IntoResponse {
+async fn media_details_page(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
     let id = params.get("id").cloned().unwrap_or_default();
     let Ok(media_id) = MediaId::from_hash(id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-let repo = state.repo.clone();
+    let repo = state.repo.clone();
     let result = tokio::task::spawn_blocking(move || {
         let media = repo.get_media(&media_id).map_err(|e| e.to_string())?;
-        let adj = repo.get_media_adj_list(&media_id).unwrap_or(None).unwrap_or_default();
+        let adj = repo
+            .get_media_adj_list(&media_id)
+            .unwrap_or(None)
+            .unwrap_or_default();
         // resolve tag names grouped by relationship
         let mut rels: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for (r, _) in &adj { rels.insert(r.clone()); }
+        for (r, _) in &adj {
+            rels.insert(r.clone());
+        }
         let mut tags = Vec::new();
         for r in &rels {
             if let Ok(Some(ts)) = recondo_domain::get_tags_by_relationship(r, repo.as_ref()) {
@@ -202,9 +211,7 @@ let repo = state.repo.clone();
     })
     .await;
     match result {
-        Ok(Ok((Some(media), tags))) => {
-            media::render_details(&media, &tags).into_response()
-        }
+        Ok(Ok((Some(media), tags))) => media::render_details(&media, &tags).into_response(),
         _ => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -215,6 +222,10 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
     if params.tag_ids.is_empty() {
         return media::render(
             &[],
+            media::GroupState {
+                groups: &params.groups,
+                add_to_groups: &params.add_to_groups,
+            },
             params.limit,
             params.operation,
             None,
@@ -229,6 +240,7 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
         .map(|id| Tag::from_parts(id.clone(), format!("Unknown tag {}", short_id(id))))
         .collect::<Vec<_>>();
     let tag_ids = params.tag_ids.clone();
+    let groups = params.groups.clone();
     let limit = params.limit;
     let operation = params.operation;
     let result = tokio::task::spawn_blocking(move || {
@@ -238,6 +250,9 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
             }
             media::Operation::Or => {
                 get_enriched_media_by_logical_or(&tag_ids, limit, repo.as_ref())
+            }
+            media::Operation::AndThenOr => {
+                get_enriched_media_by_logical_and_then_or(&groups, limit, repo.as_ref())
             }
         }
         .map_err(|error| error.to_string())?;
@@ -249,6 +264,10 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
     match result {
         Ok(Ok((query, selected_tags))) => media::render(
             &selected_tags,
+            media::GroupState {
+                groups: &params.groups,
+                add_to_groups: &params.add_to_groups,
+            },
             params.limit,
             params.operation,
             Some(&query),
@@ -259,6 +278,10 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
             eprintln!("Error querying media for selected tags: {error}");
             media::render(
                 &placeholder_tags,
+                media::GroupState {
+                    groups: &params.groups,
+                    add_to_groups: &params.add_to_groups,
+                },
                 params.limit,
                 params.operation,
                 None,
@@ -270,6 +293,10 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
             eprintln!("Media query task failed: {error}");
             media::render(
                 &placeholder_tags,
+                media::GroupState {
+                    groups: &params.groups,
+                    add_to_groups: &params.add_to_groups,
+                },
                 params.limit,
                 params.operation,
                 None,
@@ -282,12 +309,16 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
 
 struct MediaQueryParams {
     tag_ids: Vec<String>,
+    groups: Vec<Vec<String>>,
+    add_to_groups: Vec<usize>,
     limit: usize,
     operation: media::Operation,
 }
 
 fn parse_media_query(query: &str) -> MediaQueryParams {
     let mut tag_ids = Vec::new();
+    let mut groups = Vec::new();
+    let mut add_to_groups = Vec::new();
     let mut limit = media::DEFAULT_LIMIT;
     let mut operation = media::Operation::And;
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
@@ -296,6 +327,22 @@ fn parse_media_query(query: &str) -> MediaQueryParams {
                 let id = value.into_owned();
                 if !tag_ids.contains(&id) {
                     tag_ids.push(id);
+                }
+            }
+            "group" => {
+                let mut group = Vec::new();
+                for id in value.split(',').filter(|id| !id.is_empty()) {
+                    if !group.iter().any(|existing| existing == id) {
+                        group.push(id.to_string());
+                    }
+                }
+                groups.push(group);
+            }
+            "target" => {
+                if let Ok(index) = value.parse::<usize>()
+                    && !add_to_groups.contains(&index)
+                {
+                    add_to_groups.push(index);
                 }
             }
             "limit" => {
@@ -310,17 +357,38 @@ fn parse_media_query(query: &str) -> MediaQueryParams {
                 };
             }
             "operation" => {
-                operation = if value == "or" {
-                    media::Operation::Or
-                } else {
-                    media::Operation::And
+                operation = match value.as_ref() {
+                    "or" => media::Operation::Or,
+                    "and_then_or" => media::Operation::AndThenOr,
+                    _ => media::Operation::And,
                 };
             }
             _ => {}
         }
     }
+    if operation == media::Operation::AndThenOr {
+        if groups.is_empty() {
+            groups.push(tag_ids.clone());
+            groups.push(Vec::new());
+        } else if groups.len() == 1 {
+            operation = media::Operation::And;
+            tag_ids = groups.pop().unwrap_or_default();
+        } else {
+            tag_ids.clear();
+            for group in &groups {
+                for id in group {
+                    if !tag_ids.contains(id) {
+                        tag_ids.push(id.clone());
+                    }
+                }
+            }
+            add_to_groups.retain(|index| *index < groups.len());
+        }
+    }
     MediaQueryParams {
         tag_ids,
+        groups,
+        add_to_groups,
         limit,
         operation,
     }
@@ -330,6 +398,9 @@ struct MediaPickerParams {
     prefix: String,
     relationship: String,
     selected_ids: Vec<String>,
+    groups: Vec<Vec<String>>,
+    add_to_groups: Vec<usize>,
+    operation: media::Operation,
     limit: usize,
 }
 
@@ -338,6 +409,9 @@ fn parse_media_picker_query(query: &str) -> MediaPickerParams {
         prefix: String::new(),
         relationship: String::new(),
         selected_ids: Vec::new(),
+        groups: Vec::new(),
+        add_to_groups: Vec::new(),
+        operation: media::Operation::Or,
         limit: media::DEFAULT_LIMIT,
     };
     for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
@@ -352,6 +426,25 @@ fn parse_media_picker_query(query: &str) -> MediaPickerParams {
                     }
                 }
             }
+            "group" => {
+                let mut group = Vec::new();
+                for id in value.split(',').filter(|id| !id.is_empty()) {
+                    if !group.iter().any(|existing| existing == id) {
+                        group.push(id.to_string());
+                    }
+                }
+                params.groups.push(group);
+            }
+            "target" => {
+                if let Ok(index) = value.parse::<usize>()
+                    && !params.add_to_groups.contains(&index)
+                {
+                    params.add_to_groups.push(index);
+                }
+            }
+            "operation" if value == "and_then_or" => {
+                params.operation = media::Operation::AndThenOr;
+            }
             "limit" => {
                 params.limit = if value == "unlimited" {
                     usize::MAX
@@ -365,6 +458,18 @@ fn parse_media_picker_query(query: &str) -> MediaPickerParams {
             }
             _ => {}
         }
+    }
+    if params.operation == media::Operation::AndThenOr {
+        for group in &params.groups {
+            for id in group {
+                if !params.selected_ids.contains(id) {
+                    params.selected_ids.push(id.clone());
+                }
+            }
+        }
+        params
+            .add_to_groups
+            .retain(|index| *index < params.groups.len());
     }
     params
 }
@@ -468,7 +573,10 @@ async fn media_picker_search(
             &prefix,
             relationships.as_deref().unwrap_or_default(),
             &params.selected_ids,
+            &params.groups,
+            &params.add_to_groups,
             params.limit,
+            params.operation,
         ),
         Ok(Err(error)) => {
             eprintln!("Error searching media-picker relationships by prefix {prefix:?}: {error}");
@@ -491,7 +599,10 @@ async fn media_picker_relationship(
         state.repo,
         params.relationship,
         params.selected_ids,
+        params.groups,
+        params.add_to_groups,
         params.limit,
+        params.operation,
     )
     .await;
     patch_response("#media-relationship-details", markup)
@@ -538,7 +649,10 @@ async fn media_picker_submit_relationship(
             &relationship,
             &tags,
             &params.selected_ids,
+            &params.groups,
+            &params.add_to_groups,
             params.limit,
+            params.operation,
         ),
         Ok(Ok(None)) => media::picker_message("No matching relationships were found."),
         Ok(Err(error)) => {
@@ -557,7 +671,10 @@ async fn load_media_picker_relationship(
     repo: Arc<RedbMediaRepository>,
     relationship: String,
     selected_ids: Vec<String>,
+    groups: Vec<Vec<String>>,
+    add_to_groups: Vec<usize>,
     limit: usize,
+    operation: media::Operation,
 ) -> maud::Markup {
     if normalize_relationship(&relationship).is_empty() {
         return media::picker_message("Choose a relationship to see its tags.");
@@ -569,9 +686,15 @@ async fn load_media_picker_relationship(
     })
     .await
     {
-        Ok(Ok(Some((relationship, tags)))) => {
-            media::picker_relationship_tags(&relationship, &tags, &selected_ids, limit)
-        }
+        Ok(Ok(Some((relationship, tags)))) => media::picker_relationship_tags(
+            &relationship,
+            &tags,
+            &selected_ids,
+            &groups,
+            &add_to_groups,
+            limit,
+            operation,
+        ),
         Ok(Ok(None)) => media::picker_message("No tags were found for that relationship."),
         Ok(Err(error)) => {
             eprintln!("Error loading media-picker relationship tags: {error}");
@@ -1171,7 +1294,7 @@ mod tests {
     use redb::Database;
     use tower::ServiceExt;
 
-    use super::{AppState, parse_upload_tag_pair, router};
+    use super::{AppState, media, parse_media_query, parse_upload_tag_pair, router};
 
     /// Builds an `AppState` backed by a single temp dir (redb database +
     /// `assets/` subdir). The `TempDir` is returned so tests can keep it
@@ -1214,6 +1337,28 @@ mod tests {
         .unwrap();
         add_tag_to_media(media.id.as_str(), "topic tag", "topic", state.repo.as_ref()).unwrap();
         media_id
+    }
+
+    #[test]
+    fn parse_media_query_reads_grouped_and_target_parameters() {
+        let params = parse_media_query(
+            "operation=and_then_or&group=tag-a,tag-b&group=tag-c&target=1&target=0&limit=25",
+        );
+        assert_eq!(params.operation, media::Operation::AndThenOr);
+        assert_eq!(
+            params.groups,
+            vec![
+                vec!["tag-a".to_string(), "tag-b".to_string()],
+                vec!["tag-c".to_string()]
+            ]
+        );
+        assert_eq!(params.tag_ids, vec!["tag-a", "tag-b", "tag-c"]);
+        assert_eq!(params.add_to_groups, vec![1, 0]);
+        assert_eq!(params.limit, 25);
+
+        let single_group = parse_media_query("operation=and_then_or&group=tag-a&limit=10");
+        assert_eq!(single_group.operation, media::Operation::And);
+        assert_eq!(single_group.tag_ids, vec!["tag-a"]);
     }
 
     #[tokio::test]
@@ -1499,10 +1644,59 @@ mod tests {
         assert!(html.contains("topic tag"));
         assert!(html.contains("needs tags"));
         assert!(html.contains("DISPLAY LIMIT"));
-        assert!(html.contains("AND then OR and OR then AND are not functional yet."));
+        assert!(html.contains("OR then AND is not functional yet."));
         assert!(html.contains(&format!("href=\"/media?tag={other_tag_id}&amp;limit=25\"")));
         assert!(html.contains("Download file"));
         assert!(html.contains("data-on:change"));
+    }
+
+    #[tokio::test]
+    async fn media_and_then_or_query_matches_any_complete_group() {
+        let (state, temp) = test_app_state();
+        let first_media_id = seed_explore_relationships(&state, &temp);
+        let second_source = temp.path().join("second-group-media.txt");
+        std::fs::write(&second_source, "second grouped query media").unwrap();
+        let second_media = match create_media_from_file_in(
+            second_source,
+            &temp.path().join("assets"),
+            state.repo.as_ref(),
+        )
+        .unwrap()
+        {
+            CreateMediaOutcome::Created(media) => media,
+            CreateMediaOutcome::Duplicate(_) => panic!("test media should be unique"),
+        };
+        add_tag_to_media(
+            second_media.id.as_str(),
+            "another subject",
+            "subject",
+            state.repo.as_ref(),
+        )
+        .unwrap();
+
+        let field_note_id = Tag::new("field note").unwrap().id().to_string();
+        let topic_tag_id = Tag::new("topic tag").unwrap().id().to_string();
+        let another_subject_id = Tag::new("another subject").unwrap().id().to_string();
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/media?operation=and_then_or&group={field_note_id},{topic_tag_id}&group={another_subject_id}&target=1&limit=10"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+
+        assert_eq!(html.matches("data-testid=\"media-card\"").count(), 2);
+        assert!(html.contains(&format!("/asset/{first_media_id}")));
+        assert!(html.contains(&format!("/asset/{}", second_media.id.as_str())));
+        assert!(html.contains("OR All Of"));
+        assert!(html.contains("Add new tags to this group"));
     }
 
     #[tokio::test]

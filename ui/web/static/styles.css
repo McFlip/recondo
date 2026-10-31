@@ -202,6 +202,18 @@ h1 em, h2 em { color: var(--accent); font-family: var(--serif); font-weight: 500
 .media-main { min-width: 0; }
 .media-toolbar { display: flex; flex-direction: column; gap: 20px; padding: 22px; border-bottom: 1px solid var(--line); }
 .selected-tags-section { min-width: 0; }
+.media-groups { display: flex; flex-direction: column; gap: 9px; }
+.media-tag-group { min-width: 0; padding: 11px; border: 1px solid #343a2e; background: #11140f; }
+.media-tag-group-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.media-group-target-label { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 10px; cursor: pointer; }
+.media-group-target-label input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
+.media-group-delete { display: grid; width: 30px; height: 30px; flex: 0 0 auto; place-items: center; border: 1px solid #3a3f34; color: var(--faint); font-size: 17px; }
+.media-group-delete:hover { border-color: #9e6d59; color: #e6a18a; }
+.media-group-operator { margin: 0; color: var(--accent); font-family: var(--mono); font-size: 9px; letter-spacing: .12em; text-align: center; text-transform: uppercase; }
+.media-group-empty { margin: 3px 0; }
+.media-add-group-form { align-self: flex-start; margin: 0; }
+.media-add-group { display: inline-flex; align-items: center; }
+.media-trash-icon { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.6; }
 .media-control-label { display: block; margin: 0 0 10px; color: var(--faint); font-family: var(--mono); font-size: 9px; letter-spacing: .12em; }
 .selected-tag-list { display: flex; flex-wrap: wrap; gap: 7px; }
 .selected-tag-chip { display: inline-flex; align-items: center; gap: 9px; min-height: 32px; padding: 0 0 0 10px; border: 1px solid #465139; background: #1b2116; color: var(--accent); font-family: var(--mono); font-size: 10px; }
