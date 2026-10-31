@@ -242,8 +242,13 @@ h1 em, h2 em { color: var(--accent); font-family: var(--serif); font-weight: 500
 .media-lightbox-nav { position: absolute; top: 50%; transform: translateY(-50%); display: grid; width: 40px; height: 40px; place-items: center; border: 1px solid #454a3e; background: #1a1d17; color: var(--ink); cursor: pointer; font-size: 28px; line-height: 1; user-select: none; z-index: 10; }
 .media-lightbox-nav:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
 .media-lightbox-nav:disabled { opacity: 0.3; cursor: not-allowed; border-color: #31352b; color: #5a6052; }
-.media-lightbox-prev { left: 12px; }
-.media-lightbox-next { right: 12px; }
+.media-lightbox-open { position: absolute; top: 7px; left: 9px; padding: 6px 10px; border: 1px solid #454a3e; background: #1a1d17; color: var(--ink); text-decoration: none; font-size: 12px; }
+.media-lightbox-open:hover { border-color: var(--accent); color: var(--accent); }
+.media-details { max-width: 900px; margin: 0 auto; }
+.back-button { display: inline-block; margin-bottom: 16px; color: var(--accent); text-decoration: none; }
+.details-meta { margin-bottom: 20px; }
+.details-image { width: 100%; cursor: zoom-in; }
+.details-image.full-size { width: auto; max-width: none; cursor: zoom-out; }
 
 .site-footer { min-height: 92px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-inline: max(24px, calc((100% - 1120px) / 2)); border-top: 1px solid var(--line); color: var(--muted); }
 .footer-wordmark { color: var(--ink); font-size: 15px; }

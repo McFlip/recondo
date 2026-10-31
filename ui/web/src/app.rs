@@ -46,6 +46,7 @@ pub fn router(state: AppState) -> Router {
         .route("/explore/relationship", get(show_relationship))
         .route("/explore/submit", get(submit_relationship_search))
         .route("/media", get(media_page))
+.route("/media/details", get(media_details_page))
         .route("/media/relationship-search", get(media_picker_search))
         .route("/media/relationship", get(media_picker_relationship))
         .route(
@@ -176,6 +177,37 @@ async fn explore_page() -> maud::Markup {
     explore::render()
 }
 
+async fn media_details_page(State(state): State<AppState>, Query(params): Query<std::collections::HashMap<String, String>>) -> impl IntoResponse {
+    let id = params.get("id").cloned().unwrap_or_default();
+    let Ok(media_id) = MediaId::from_hash(id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+let repo = state.repo.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let media = repo.get_media(&media_id).map_err(|e| e.to_string())?;
+        let adj = repo.get_media_adj_list(&media_id).unwrap_or(None).unwrap_or_default();
+        // resolve tag names grouped by relationship
+        let mut rels: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (r, _) in &adj { rels.insert(r.clone()); }
+        let mut tags = Vec::new();
+        for r in &rels {
+            if let Ok(Some(ts)) = recondo_domain::get_tags_by_relationship(r, repo.as_ref()) {
+                tags.extend(ts);
+            }
+        }
+        // keep only those in adj
+        let ids: std::collections::HashSet<String> = adj.iter().map(|(_, t)| t.clone()).collect();
+        tags.retain(|t| ids.contains(t.id()));
+        Ok::<_, String>((media, tags))
+    })
+    .await;
+    match result {
+        Ok(Ok((Some(media), tags))) => {
+            media::render_details(&media, &tags).into_response()
+        }
+        _ => StatusCode::NOT_FOUND.into_response(),
+    }
+}
 async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery) -> maud::Markup {
     let params = parse_media_query(raw_query.as_deref().unwrap_or_default());
     let repo = state.repo;

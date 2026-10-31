@@ -169,6 +169,7 @@ pub fn render(
                     "›"
                 }
                 img id="media-lightbox-image" alt="Full-size media preview";
+                a id="media-lightbox-open" class="media-lightbox-open" aria-label="Open details" href="#" { "Open" }
             }
             script src="/media.js" {}
         },
@@ -483,6 +484,61 @@ pub fn picker_message(message: &str) -> Markup {
     }
 }
 
+pub fn render_details(media: &Media, tags: &[Tag]) -> Markup {
+    let asset_url = format!("/asset/{}", media.id.as_str());
+    let title = media.title.as_deref().unwrap_or_else(|| media.id.as_str());
+    let mime_type = media
+        .mime_type
+        .as_deref()
+        .unwrap_or("application/octet-stream");
+    let size_display = match media.file_size {
+        Some(s) if s < 1024 => format!("{s} B"),
+        Some(s) if s < 1024 * 1024 => format!("{:.1} KB", s as f64 / 1024.0),
+        Some(s) => format!("{:.2} MB", s as f64 / (1024.0 * 1024.0)),
+        None => "Unknown".to_string(),
+    };
+    let download_name = media
+        .url
+        .to_file_path()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| media.id.as_str().to_string());
+
+    layout::render(
+        "Media details",
+        html! {
+            section class="shell media-details section-space" {
+                button class="back-button" data-on:click="window.history.back()" { "← Back" }
+                div class="details-meta" {
+                    h1 { (title) }
+                    p { "MIME: " (mime_type) }
+                    p { "Size: " (size_display) }
+                    p { "Views: " (media.view_count) }
+                    p { "URL: " (media.url.as_str()) }
+                    div class="tag-list" {
+                        @for tag in tags {
+                            span class="tag-chip" { (tag.name()) }
+                        }
+                    }
+                }
+                div class="details-media" {
+                    @if mime_type.starts_with("image/") {
+                        img class="details-image" src=(asset_url) alt=(title) data-on:click="el.classList.toggle('full-size')" {}
+                    } @else if mime_type.starts_with("video/") {
+                        video controls preload="metadata" src=(asset_url) { "Your browser does not support embedded video." }
+                    } @else {
+                        a class="media-download" href=(asset_url) download=(download_name) {
+                            span class="download-icon" aria-hidden="true" { "↓" }
+                            span { "Download file" }
+                        }
+                    }
+                }
+            }
+            script src="/media.js" {}
+        },
+    )
+}
+
 fn media_card(item: &Media) -> Markup {
     let asset_url = format!("/asset/{}", item.id.as_str());
     let title = item.title.as_deref().unwrap_or_else(|| item.id.as_str());
@@ -508,6 +564,7 @@ fn media_card(item: &Media) -> Markup {
                         src=(asset_url)
                         alt=(title)
                         loading="lazy"
+                        data-media-id=(item.id.as_str())
                         data-on:click="window.openMediaLightbox(el)";
                 } @else if mime_type.starts_with("video/") {
                     video controls preload="metadata" src=(asset_url) {
