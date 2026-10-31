@@ -84,7 +84,11 @@ impl DemoSelection {
         if self.0.is_empty() {
             "all".to_string()
         } else {
-            self.0.iter().map(|tag| tag.slug()).collect::<Vec<_>>().join(",")
+            self.0
+                .iter()
+                .map(|tag| tag.slug())
+                .collect::<Vec<_>>()
+                .join(",")
         }
     }
 
@@ -190,7 +194,7 @@ pub fn render() -> Markup {
                     div class="demo-heading" {
                         div {
                             p class="eyebrow" { "A small field test" }
-                            h2 { "A few tags can change " em { "everything." } }
+                            h2 { "Combining multiple tags can change " em { "everything." } }
                         }
                         p class="section-description" {
                             "Choose tags to see how logical AND narrows the results. Selecting multiple tags keeps only the media that matches every selected tag, letting you drill down from a broad idea to a precise subset."
@@ -210,12 +214,20 @@ pub fn render() -> Markup {
                 }
             }
 
-            section class="closing-section shell" {
-                div class="closing-mark" aria-hidden="true" { "✳" }
-                p class="eyebrow" { "UNDER DEVELOPMENT" }
-                h2 { "A little more discovery. " em { "A lot less hunting." } }
-                p { "Recondo is taking shape. The idea is simple: finding media should feel like exploration, not a scavenger hunt." }
-                a class="button button-secondary" href="#demo" { "Try the demo" span aria-hidden="true" { "↗" } }
+            section class="name-section shell section-space" {
+                div class="section-heading" {
+                    p class="eyebrow" { "THE NAME" }
+                    h2 { "Reconnaissance " em { " commando." } }
+                }
+                p class="section-description" {
+                    "Recondo is a portmanteau of reconnaissance and commando. The name became associated with the U.S. Army's long-range reconnaissance patrols during the Vietnam War, whose small teams ventured deep into enemy territory to observe, gather intelligence, and locate an elusive enemy."
+                }
+                p class="section-description" {
+                    "Recondo borrows that spirit of exploration: venture into a vast, unfamiliar collection, follow the leads, uncover connections, and find what you're looking for—even when you don't know exactly where to start."
+                }
+                div class="hero-actions" {
+                    a class="button button-secondary" href="#demo" { "Try the demo" span aria-hidden="true" { "↗" } }
+                }
             }
         },
     )
@@ -287,3 +299,4 @@ fn principle(number: &str, title: &str, description: &str) -> Markup {
         }
     }
 }
+
