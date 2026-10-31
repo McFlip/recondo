@@ -2,16 +2,17 @@ use maud::{Markup, html};
 
 use crate::{components, layout};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DemoFilter {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DemoTag {
     All,
     Data,
     Spreadsheets,
     Code,
     Memes,
+    Security,
 }
 
-impl DemoFilter {
+impl DemoTag {
     pub fn from_slug(slug: &str) -> Option<Self> {
         match slug {
             "all" => Some(Self::All),
@@ -19,6 +20,7 @@ impl DemoFilter {
             "spreadsheets" => Some(Self::Spreadsheets),
             "code" => Some(Self::Code),
             "memes" => Some(Self::Memes),
+            "security" => Some(Self::Security),
             _ => None,
         }
     }
@@ -30,6 +32,7 @@ impl DemoFilter {
             Self::Spreadsheets => "spreadsheets",
             Self::Code => "code",
             Self::Memes => "memes",
+            Self::Security => "security",
         }
     }
 
@@ -40,21 +43,61 @@ impl DemoFilter {
             Self::Spreadsheets => "Spreadsheets",
             Self::Code => "Code",
             Self::Memes => "Memes",
+            Self::Security => "Security",
         }
     }
 
-    fn matches(self, item: &DemoMedia) -> bool {
+    fn tag_name(self) -> Option<&'static str> {
         match self {
-            Self::All => true,
-            Self::Data => item.tags.contains(&"data"),
-            Self::Spreadsheets => item.tags.contains(&"spreadsheet"),
-            Self::Code => item.tags.contains(&"code"),
-            Self::Memes => item.tags.contains(&"meme"),
+            Self::All => None,
+            Self::Data => Some("data"),
+            Self::Spreadsheets => Some("spreadsheet"),
+            Self::Code => Some("code"),
+            Self::Memes => Some("meme"),
+            Self::Security => Some("security"),
         }
     }
 }
 
-struct DemoMedia {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DemoSelection(pub Vec<DemoTag>);
+
+impl DemoSelection {
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        if slug == "all" || slug.is_empty() {
+            return Some(Self(Vec::new()));
+        }
+        let mut tags = Vec::new();
+        for part in slug.split(',') {
+            let tag = DemoTag::from_slug(part.trim())?;
+            if tag == DemoTag::All {
+                return Some(Self(Vec::new()));
+            }
+            if !tags.contains(&tag) {
+                tags.push(tag);
+            }
+        }
+        Some(Self(tags))
+    }
+
+    pub fn slug(&self) -> String {
+        if self.0.is_empty() {
+            "all".to_string()
+        } else {
+            self.0.iter().map(|tag| tag.slug()).collect::<Vec<_>>().join(",")
+        }
+    }
+
+    pub fn matches(&self, item: &DemoMedia) -> bool {
+        self.0.iter().all(|tag| {
+            tag.tag_name()
+                .map(|name| item.tags.contains(&name))
+                .unwrap_or(true)
+        })
+    }
+}
+
+pub(crate) struct DemoMedia {
     title: &'static str,
     filename: &'static str,
     tags: &'static [&'static str],
@@ -134,9 +177,6 @@ pub fn render() -> Markup {
                 div class="section-heading" {
                     p class="eyebrow" { "A different way to look" }
                     h2 { "Your collection, " em { "without the dead ends." } }
-                    p class="section-description" {
-                        "Folders ask you to pick one place. Recondo lets every item belong to all the ideas it connects to."
-                    }
                 }
                 div class="principle-grid" {
                     (principle("01", "Describe, don’t file.", "Add tags for what something is, where it belongs, or what it reminds you of. One item can connect to many ideas."))
@@ -153,18 +193,18 @@ pub fn render() -> Markup {
                             h2 { "A few tags can change " em { "everything." } }
                         }
                         p class="section-description" {
-                            "Choose a tag to see how a connection can surface different media. These example items come from the project’s test fixtures."
+                            "Choose tags to see how logical AND narrows the results. Selecting multiple tags keeps only the media that matches every selected tag, letting you drill down from a broad idea to a precise subset."
                         }
                     }
                     div class="demo-panel" {
                         div class="demo-toolbar" {
                             div {
                                 span class="demo-label" { "EXPLORE BY TAG" }
-                                (filter_controls(DemoFilter::All))
+                                (filter_controls(&DemoSelection(Vec::new())))
                             }
-                            p class="demo-hint" { "Select a tag to update the collection ↗" }
+                            p class="demo-hint" { "Toggle tags on or off; selecting more tags narrows the results ↗" }
                         }
-                        (results(DemoFilter::All))
+                        (results(&DemoSelection(Vec::new())))
                     }
                     p class="demo-disclaimer" { "Illustrative fixture data · Real collections, real connections, coming as Recondo develops." }
                 }
@@ -181,17 +221,19 @@ pub fn render() -> Markup {
     )
 }
 
-pub fn results(filter: DemoFilter) -> Markup {
+pub fn results(selection: &DemoSelection) -> Markup {
     let items = DEMO_MEDIA
         .iter()
-        .filter(|item| filter.matches(item))
+        .filter(|item| selection.matches(item))
         .collect::<Vec<_>>();
 
     html! {
         section id="demo-results" class="results-section" aria-live="polite" {
             div class="results-summary" {
                 p { "Showing " strong { (items.len()) } " " (if items.len() == 1 { "item" } else { "items" }) }
-                span class="active-filter" { "#" (filter.label().to_lowercase().replace(' ', "-")) }
+                @if !selection.0.is_empty() {
+                    span class="active-filter" { (selection.0.iter().map(|t| format!("#{}", t.label().to_lowercase())).collect::<Vec<_>>().join(" + ")) }
+                }
             }
             div class="media-grid" {
                 @for item in items {
@@ -202,27 +244,36 @@ pub fn results(filter: DemoFilter) -> Markup {
     }
 }
 
-pub fn filter_controls(selected: DemoFilter) -> Markup {
+pub fn filter_controls(selection: &DemoSelection) -> Markup {
     html! {
         div id="demo-filters" class="filter-list" aria-label="Filter demo media by tag" {
-            @for filter in [DemoFilter::All, DemoFilter::Data, DemoFilter::Spreadsheets, DemoFilter::Code, DemoFilter::Memes] {
-                (filter_button(filter, selected))
+            @for tag in [DemoTag::Data, DemoTag::Spreadsheets, DemoTag::Code, DemoTag::Memes, DemoTag::Security] {
+                (filter_button(tag, selection))
             }
         }
     }
 }
 
-fn filter_button(filter: DemoFilter, selected: DemoFilter) -> Markup {
-    let class = if filter == selected {
+fn filter_button(tag: DemoTag, selection: &DemoSelection) -> Markup {
+    let selected = selection.0.contains(&tag);
+    let mut next = selection.0.clone();
+    if selected {
+        next.retain(|t| *t != tag);
+    } else {
+        next.push(tag);
+    }
+    let next_slug = DemoSelection(next).slug();
+    let action = format!("@get('/demo/{}')", next_slug);
+
+    let class = if selected {
         "filter-button is-selected"
     } else {
         "filter-button"
     };
-    let action = format!("@get('/demo/{}')", filter.slug());
 
     html! {
-        button type="button" class=(class) aria-pressed=(filter == selected) data-on:click=(action) {
-            (filter.label())
+        button type="button" class=(class) aria-pressed=(selected) data-on:click=(action) {
+            (tag.label())
         }
     }
 }

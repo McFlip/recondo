@@ -32,7 +32,7 @@ use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio_stream::iter;
 
 use crate::pages::explore;
-use crate::pages::landing::{self, DemoFilter};
+use crate::pages::landing;
 use crate::pages::media;
 use crate::pages::upload;
 
@@ -1435,10 +1435,10 @@ async fn filter_demo(
     Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>>,
     StatusCode,
 > {
-    let filter = DemoFilter::from_slug(&filter).ok_or(StatusCode::NOT_FOUND)?;
+    let selection = landing::DemoSelection::from_slug(&filter).ok_or(StatusCode::NOT_FOUND)?;
     let elements = maud::html! {
-        (landing::filter_controls(filter))
-        (landing::results(filter))
+        (landing::filter_controls(&selection))
+        (landing::results(&selection))
     }
     .into_string();
     let event = PatchElements::new(elements)
@@ -1776,7 +1776,7 @@ mod tests {
         let html = String::from_utf8(body.to_vec()).unwrap();
 
         assert!(html.contains("graph-based media discovery"));
-        assert!(html.contains("Choose a tag to see how a connection"));
+        assert!(html.contains("Choose tags to see how logical AND"));
         assert!(html.contains("data_trap.png"));
         assert!(html.contains("datastar.js"));
     }
