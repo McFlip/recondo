@@ -55,6 +55,11 @@ pub trait TagRepository {
     ) -> Result<Option<Vec<String>>, Self::Error>;
     fn get_tags_by_relationship(&self, relationship: &str)
     -> Result<Option<Vec<Tag>>, Self::Error>;
+    fn merge_relationship(
+        &self,
+        source_relationship: &str,
+        dest_relationship: &str,
+    ) -> Result<(), Self::Error>;
 }
 
 #[derive(Debug)]

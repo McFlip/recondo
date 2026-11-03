@@ -358,4 +358,111 @@ impl TagRepository for RedbMediaRepository {
     ) -> Result<Option<Vec<Tag>>, Self::Error> {
         get_tags_by_relationship(self.database(), relationship).map_err(AddTagEdgeError::repository)
     }
+
+    fn merge_relationship(
+        &self,
+        source_relationship: &str,
+        dest_relationship: &str,
+    ) -> Result<(), Self::Error> {
+        let source = normalize_relationship(source_relationship);
+        let dest = normalize_relationship(dest_relationship);
+        if source.is_empty() || dest.is_empty() {
+            return Err(AddTagEdgeError::repository(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "relationships must not be empty",
+            )));
+        }
+        if source == dest {
+            return Ok(());
+        }
+
+        let write_txn = self
+            .database()
+            .begin_write()
+            .map_err(AddTagEdgeError::repository)?;
+        {
+            let mut rel_table = write_txn
+                .open_table(RELATIONSHIP_TO_TAGS)
+                .map_err(AddTagEdgeError::repository)?;
+            let source_tags = rel_table
+                .remove(source.as_str())
+                .map_err(AddTagEdgeError::repository)?
+                .map(|value| value.value())
+                .unwrap_or_default();
+
+            if !source_tags.is_empty() {
+                let mut dest_tags = rel_table
+                    .get(dest.as_str())
+                    .map_err(AddTagEdgeError::repository)?
+                    .map(|value| value.value())
+                    .unwrap_or_default();
+                for tag_id in &source_tags {
+                    if !dest_tags.contains(tag_id) {
+                        dest_tags.push(tag_id.clone());
+                    }
+                }
+                rel_table
+                    .insert(dest.as_str(), dest_tags)
+                    .map_err(AddTagEdgeError::repository)?;
+
+                let mut tag_table = write_txn
+                    .open_table(TAG_ADJ_LST)
+                    .map_err(AddTagEdgeError::repository)?;
+                let mut affected_media_ids: Vec<String> = Vec::new();
+
+                for tag_id in &source_tags {
+                    let existing_edges = tag_table
+                        .get(tag_id.as_str())
+                        .map_err(AddTagEdgeError::repository)?
+                        .map(|value| value.value())
+                        .unwrap_or_default();
+                    let mut updated_edges: Vec<EdgeFrmTag> =
+                        Vec::with_capacity(existing_edges.len());
+                    for (rel, media_id) in existing_edges {
+                        let next_rel = if rel == source {
+                            if !affected_media_ids.contains(&media_id) {
+                                affected_media_ids.push(media_id.clone());
+                            }
+                            dest.clone()
+                        } else {
+                            rel
+                        };
+                        let candidate = (next_rel, media_id);
+                        if !updated_edges.contains(&candidate) {
+                            updated_edges.push(candidate);
+                        }
+                    }
+                    tag_table
+                        .insert(tag_id.as_str(), updated_edges)
+                        .map_err(AddTagEdgeError::repository)?;
+                }
+
+                let mut media_table = write_txn
+                    .open_table(MEDIA_ADJ_LST)
+                    .map_err(AddTagEdgeError::repository)?;
+                for media_id in &affected_media_ids {
+                    let existing_edges = media_table
+                        .get(media_id.as_str())
+                        .map_err(AddTagEdgeError::repository)?
+                        .map(|value| value.value());
+                    if let Some(existing_edges) = existing_edges {
+                        let mut updated_edges: Vec<(String, String)> =
+                            Vec::with_capacity(existing_edges.len());
+                        for (rel, tag_id) in existing_edges {
+                            let next_rel = if rel == source { dest.clone() } else { rel };
+                            let candidate = (next_rel, tag_id);
+                            if !updated_edges.contains(&candidate) {
+                                updated_edges.push(candidate);
+                            }
+                        }
+                        media_table
+                            .insert(media_id.as_str(), updated_edges)
+                            .map_err(AddTagEdgeError::repository)?;
+                    }
+                }
+            }
+        }
+        write_txn.commit().map_err(AddTagEdgeError::repository)?;
+        Ok(())
+    }
 }

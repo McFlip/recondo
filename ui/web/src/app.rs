@@ -19,7 +19,7 @@ use datastar::{
 use recondo_dal::media::RedbMediaRepository;
 use recondo_domain::cmd::{
     CreateMediaOutcome, add_tag_to_media, create_media_from_file_in_with_tags_and_title,
-    remove_tag_from_media,
+    merge_relationship, remove_tag_from_media,
 };
 use recondo_domain::model::{MediaId, Tag, normalize_relationship};
 use recondo_domain::repository::{MediaRepository, TagRepository};
@@ -49,6 +49,12 @@ pub fn router(state: AppState) -> Router {
         .route("/explore/search", get(search_relationships))
         .route("/explore/relationship", get(show_relationship))
         .route("/explore/submit", get(submit_relationship_search))
+        .route("/relationship/manage", get(manage_relationship_page))
+        .route(
+            "/relationship/manage/search",
+            get(search_merge_relationships),
+        )
+        .route("/relationship/manage/merge", post(merge_relationship_handler))
         .route("/media", get(media_page))
         .route("/media/details", get(media_details_page))
         .route("/media/details/tag", post(add_media_detail_tag))
@@ -190,6 +196,163 @@ async fn show_upload_relationship(
 
 async fn explore_page() -> maud::Markup {
     explore::render()
+}
+
+async fn manage_relationship_page(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let raw_name = params.get("name").cloned().unwrap_or_default();
+    let relationship = normalize_relationship(&raw_name);
+    if relationship.is_empty() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let repo = state.repo;
+    let query_relationship = relationship.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        get_tags_by_relationship(&query_relationship, repo.as_ref())
+            .map(|tags| tags.unwrap_or_default())
+            .map_err(|error| error.to_string())
+    })
+    .await;
+
+    match result {
+        Ok(Ok(tags)) => explore::render_manage(
+            &relationship,
+            &tags,
+            params.get("notice").map(String::as_str),
+            params.get("error").map(String::as_str),
+        )
+        .into_response(),
+        Ok(Err(error)) => {
+            eprintln!("Could not load relationship {relationship:?} for manage page: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(error) => {
+            eprintln!("Manage relationship task failed for {relationship:?}: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+async fn search_merge_relationships(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let source = normalize_relationship(params.get("source").map(String::as_str).unwrap_or_default());
+    let prefix = params.get("prefix").cloned().unwrap_or_default();
+    if source.is_empty() {
+        return patch_response(
+            "#merge-relationship-suggestions",
+            explore::merge_suggestion_error("A source relationship is required."),
+        );
+    }
+
+    let repo = state.repo;
+    let query_prefix = prefix.clone();
+    let source_for_filter = source.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        get_relationships_by_prefix(&query_prefix, Some(12), repo.as_ref()).map(|relationships| {
+            relationships
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|rel| rel != &source_for_filter)
+                .collect::<Vec<_>>()
+        })
+    })
+    .await;
+
+    let markup = match result {
+        Ok(Ok(relationships)) => explore::merge_suggestions(&source, &prefix, &relationships),
+        Ok(Err(error)) => {
+            eprintln!("Error searching merge destination relationships by prefix {prefix:?}: {error}");
+            explore::merge_suggestion_error(&format!("Could not search relationships: {error}"))
+        }
+        Err(error) => {
+            eprintln!("Merge relationship search task failed for prefix {prefix:?}: {error}");
+            explore::merge_suggestion_error(&format!("Relationship search failed: {error}"))
+        }
+    };
+
+    patch_response("#merge-relationship-suggestions", markup)
+}
+
+async fn merge_relationship_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    let fields = match parse_form_fields(&body) {
+        Ok(fields) => fields,
+        Err(error) => {
+            eprintln!("Invalid relationship merge form: {error}");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+    let source = normalize_relationship(fields.get("source").map(String::as_str).unwrap_or_default());
+    let destination = normalize_relationship(
+        fields
+            .get("destination")
+            .map(String::as_str)
+            .unwrap_or_default(),
+    );
+    if source.is_empty() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    if destination.is_empty() {
+        return manage_relationship_redirect(
+            &source,
+            None,
+            Some("A destination relationship is required."),
+        );
+    }
+    if source == destination {
+        return manage_relationship_redirect(
+            &source,
+            None,
+            Some("Cannot merge a relationship into itself."),
+        );
+    }
+
+    let repo = state.repo;
+    let cmd_source = source.clone();
+    let cmd_destination = destination.clone();
+    match tokio::task::spawn_blocking(move || {
+        merge_relationship(&cmd_source, &cmd_destination, repo.as_ref())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(())) => manage_relationship_redirect(
+            &destination,
+            Some(&format!("Merged “{source}” into “{destination}”.")),
+            None,
+        ),
+        Ok(Err(error)) => {
+            eprintln!("Could not merge relationship {source:?} into {destination:?}: {error}");
+            manage_relationship_redirect(&source, None, Some(&error))
+        }
+        Err(error) => {
+            eprintln!("Merge relationship task failed for {source:?} -> {destination:?}: {error}");
+            manage_relationship_redirect(
+                &source,
+                None,
+                Some("The relationship could not be merged. Please try again."),
+            )
+        }
+    }
+}
+
+fn manage_relationship_redirect(
+    relationship: &str,
+    notice: Option<&str>,
+    error: Option<&str>,
+) -> Response {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("name", relationship);
+    if let Some(notice) = notice {
+        serializer.append_pair("notice", notice);
+    }
+    if let Some(error) = error {
+        serializer.append_pair("error", error);
+    }
+    Redirect::to(&format!("/relationship/manage?{}", serializer.finish())).into_response()
 }
 
 async fn media_details_page(
@@ -1944,6 +2107,90 @@ mod tests {
         assert!(event_stream.contains("datastar-patch-elements"));
         assert!(event_stream.contains("to do"));
         assert!(event_stream.contains("topic"));
+        assert!(event_stream.contains("/relationship/manage?name=to+do"));
+        assert!(event_stream.contains("aria-label=\"Manage to do\""));
+    }
+
+    #[tokio::test]
+    async fn relationship_manage_page_search_and_merge_transfers_tags_and_deletes_source() {
+        let (state, temp) = test_app_state();
+        seed_explore_relationships(&state, &temp);
+
+        let manage_response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/relationship/manage?name=topic")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(manage_response.status(), StatusCode::OK);
+        let manage_body = to_bytes(manage_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let manage_html = String::from_utf8(manage_body.to_vec()).unwrap();
+        assert!(manage_html.contains("Manage relationship"));
+        assert!(manage_html.contains("topic tag"));
+        assert!(manage_html.contains("Merge into another"));
+
+        // Searching on the manage page excludes the source relationship itself
+        let search_response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/relationship/manage/search?source=topic&prefix=t")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(search_response.status(), StatusCode::OK);
+        let search_body = to_bytes(search_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let search_html = String::from_utf8(search_body.to_vec()).unwrap();
+        assert!(search_html.contains("to do"));
+        assert!(!search_html.contains("value=\"topic\" name=\"destination\""));
+        assert!(search_html.contains("aria-label=\"Merge into to do\""));
+
+        // Submitting merge moves tags from "topic" into "to do" and deletes "topic"
+        let merge_response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/relationship/manage/merge")
+                    .header(
+                        header::CONTENT_TYPE,
+                        "application/x-www-form-urlencoded",
+                    )
+                    .body(Body::from("source=topic&destination=to+do"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(merge_response.status(), StatusCode::SEE_OTHER);
+        let location = merge_response.headers()[header::LOCATION]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(location.starts_with("/relationship/manage?name=to+do&notice="));
+
+        // Destination relationship now has "topic tag" in addition to its existing tags
+        let dest_tags = recondo_domain::get_tags_by_relationship("to do", state.repo.as_ref())
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name().to_string())
+            .collect::<Vec<_>>();
+        assert!(dest_tags.contains(&"needs tags".to_string()));
+        assert!(dest_tags.contains(&"field note".to_string()));
+        assert!(dest_tags.contains(&"topic tag".to_string()));
+
+        // Source relationship was deleted
+        assert_eq!(
+            recondo_domain::get_tags_by_relationship("topic", state.repo.as_ref()).unwrap(),
+            None
+        );
     }
 
     #[tokio::test]

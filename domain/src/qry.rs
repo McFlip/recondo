@@ -694,6 +694,17 @@ mod tests {
             }
             Ok(self.relationship_tags.get(relationship).cloned())
         }
+
+        fn merge_relationship(
+            &self,
+            _source_relationship: &str,
+            _dest_relationship: &str,
+        ) -> Result<(), Self::Error> {
+            if self.tag_should_fail {
+                return Err(MockError);
+            }
+            Ok(())
+        }
     }
 
     struct MockTagRepo {
@@ -819,6 +830,17 @@ mod tests {
                 Some(tags) if !tags.is_empty() => Ok(Some(tags.clone())),
                 _ => Ok(None),
             }
+        }
+
+        fn merge_relationship(
+            &self,
+            _source_relationship: &str,
+            _dest_relationship: &str,
+        ) -> Result<(), Self::Error> {
+            if self.should_fail {
+                return Err(MockError);
+            }
+            Ok(())
         }
     }
 

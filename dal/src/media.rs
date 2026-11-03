@@ -873,4 +873,95 @@ mod tests {
 
         let _ = fs::remove_dir_all(&base);
     }
+
+    #[test]
+    fn test_merge_relationship_transfers_and_deduplicates_tags_and_edges() {
+        let base = temp_base("merge_relationship");
+        let src_a = base.join("a.txt");
+        let src_b = base.join("b.txt");
+        fs::write(&src_a, b"a").unwrap();
+        fs::write(&src_b, b"b").unwrap();
+
+        let db_path = base.join("test.redb");
+        let db = Database::create(&db_path).unwrap();
+        init_db(&db).unwrap();
+        let repo = RedbMediaRepository::new(db);
+
+        let media_a = make_test_media("media_a");
+        let media_b = make_test_media("media_b");
+        repo.save_media(&media_a, &src_a, &base.join("assets").join("media_a.txt"))
+            .unwrap();
+        repo.save_media(&media_b, &src_b, &base.join("assets").join("media_b.txt"))
+            .unwrap();
+
+        let tag_shared = Tag::new("alice").unwrap();
+        let tag_source_only = Tag::new("bob").unwrap();
+        let tag_dest_only = Tag::new("carol").unwrap();
+
+        // media_a has both source ("author") and dest ("creator") for tag_shared ("alice")
+        repo.add_tag_edge("media_a", &tag_shared, "author").unwrap();
+        repo.add_tag_edge("media_a", &tag_shared, "creator")
+            .unwrap();
+        // media_b has source ("author") for tag_source_only ("bob") and dest ("creator") for tag_dest_only ("carol")
+        repo.add_tag_edge("media_b", &tag_source_only, "author")
+            .unwrap();
+        repo.add_tag_edge("media_b", &tag_dest_only, "creator")
+            .unwrap();
+
+        repo.merge_relationship("Author", "Creator").unwrap();
+
+        // Source relationship should be deleted
+        assert_eq!(repo.get_tags_by_relationship("author").unwrap(), None);
+
+        // Destination relationship should have all three tags, deduplicated
+        let creator_tags = repo
+            .get_tags_by_relationship("creator")
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(creator_tags, vec!["alice", "carol", "bob"]);
+
+        // TAG_ADJ_LST for tag_shared should have deduplicated ("creator", "media_a")
+        let shared_adj = repo.get_tag_adj_list(tag_shared.id()).unwrap().unwrap();
+        assert_eq!(
+            shared_adj,
+            vec![("creator".to_string(), "media_a".to_string())]
+        );
+
+        // TAG_ADJ_LST for tag_source_only should now point to "creator"
+        let source_only_adj = repo
+            .get_tag_adj_list(tag_source_only.id())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            source_only_adj,
+            vec![("creator".to_string(), "media_b".to_string())]
+        );
+
+        // MEDIA_ADJ_LST for media_a should not have duplicate ("creator", alice)
+        let default_tag_id = Tag::new("needs tags").unwrap().id().to_string();
+        let media_a_adj = repo.get_media_adj_list(&media_a.id).unwrap().unwrap();
+        assert_eq!(
+            media_a_adj,
+            vec![
+                ("to do".to_string(), default_tag_id.clone()),
+                ("creator".to_string(), tag_shared.id().to_string()),
+            ]
+        );
+
+        // MEDIA_ADJ_LST for media_b should have ("creator", bob) and ("creator", carol)
+        let media_b_adj = repo.get_media_adj_list(&media_b.id).unwrap().unwrap();
+        assert_eq!(
+            media_b_adj,
+            vec![
+                ("to do".to_string(), default_tag_id),
+                ("creator".to_string(), tag_source_only.id().to_string()),
+                ("creator".to_string(), tag_dest_only.id().to_string()),
+            ]
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
 }

@@ -269,6 +269,60 @@ pub fn remove_tag_from_media<R: TagRepository>(
         .map_err(RemoveTagError::Repository)
 }
 
+#[derive(Debug)]
+pub enum MergeRelationshipError<E> {
+    EmptySourceRelationship,
+    EmptyDestinationRelationship,
+    SameRelationship,
+    Repository(E),
+}
+
+impl<E: fmt::Display> fmt::Display for MergeRelationshipError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptySourceRelationship => write!(f, "source relationship must not be empty"),
+            Self::EmptyDestinationRelationship => {
+                write!(f, "destination relationship must not be empty")
+            }
+            Self::SameRelationship => {
+                write!(f, "source and destination relationships must differ")
+            }
+            Self::Repository(e) => write!(f, "repository error: {e}"),
+        }
+    }
+}
+
+impl<E: StdError + 'static> StdError for MergeRelationshipError<E> {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::EmptySourceRelationship
+            | Self::EmptyDestinationRelationship
+            | Self::SameRelationship => None,
+            Self::Repository(e) => Some(e),
+        }
+    }
+}
+
+pub fn merge_relationship<R: TagRepository>(
+    source_relationship: &str,
+    dest_relationship: &str,
+    repo: &R,
+) -> Result<(), MergeRelationshipError<R::Error>> {
+    let source = model::normalize_relationship(source_relationship);
+    if source.is_empty() {
+        return Err(MergeRelationshipError::EmptySourceRelationship);
+    }
+    let dest = model::normalize_relationship(dest_relationship);
+    if dest.is_empty() {
+        return Err(MergeRelationshipError::EmptyDestinationRelationship);
+    }
+    if source == dest {
+        return Err(MergeRelationshipError::SameRelationship);
+    }
+    repo.merge_relationship(&source, &dest)
+        .map_err(MergeRelationshipError::Repository)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,6 +525,18 @@ mod tests {
                 Ok(None)
             }
         }
+
+        fn merge_relationship(
+            &self,
+            _source_relationship: &str,
+            _dest_relationship: &str,
+        ) -> Result<(), Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
+            } else {
+                Ok(())
+            }
+        }
     }
 
     /// Creates a uniquely named temp file for the given contents.
@@ -599,5 +665,48 @@ mod tests {
         let repo = StubRepo::failing();
         let result = add_tag_to_media("media1", "landscape", "liked", &repo);
         assert!(matches!(result, Err(AddTagError::Repository(_))));
+    }
+
+    #[test]
+    fn test_merge_relationship_success() {
+        let repo = StubRepo::new(&[]);
+        assert!(merge_relationship("Author", "Creator", &repo).is_ok());
+    }
+
+    #[test]
+    fn test_merge_relationship_empty_source() {
+        let repo = StubRepo::new(&[]);
+        let result = merge_relationship("   ", "creator", &repo);
+        assert!(matches!(
+            result,
+            Err(MergeRelationshipError::EmptySourceRelationship)
+        ));
+    }
+
+    #[test]
+    fn test_merge_relationship_empty_destination() {
+        let repo = StubRepo::new(&[]);
+        let result = merge_relationship("author", "   ", &repo);
+        assert!(matches!(
+            result,
+            Err(MergeRelationshipError::EmptyDestinationRelationship)
+        ));
+    }
+
+    #[test]
+    fn test_merge_relationship_same_relationship() {
+        let repo = StubRepo::new(&[]);
+        let result = merge_relationship("Author", "  author  ", &repo);
+        assert!(matches!(
+            result,
+            Err(MergeRelationshipError::SameRelationship)
+        ));
+    }
+
+    #[test]
+    fn test_merge_relationship_repository_error() {
+        let repo = StubRepo::failing();
+        let result = merge_relationship("author", "creator", &repo);
+        assert!(matches!(result, Err(MergeRelationshipError::Repository(_))));
     }
 }

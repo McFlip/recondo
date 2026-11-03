@@ -162,6 +162,14 @@ impl TagRepository for TestRepo {
     ) -> Result<Option<Vec<Tag>>, Self::Error> {
         Ok(self.relationship_tags.get(relationship).cloned())
     }
+
+    fn merge_relationship(
+        &self,
+        _source_relationship: &str,
+        _dest_relationship: &str,
+    ) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 fn media_id(id: &str) -> MediaId {
