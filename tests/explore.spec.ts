@@ -112,3 +112,64 @@ test('gear icon opens relationship management page and merges source relationshi
     `No relationships match “${sourceRel}”.`,
   );
 });
+
+test('rename button is enabled only when search returns 0 results and renames the relationship', async ({
+  page,
+}) => {
+  const uniqueSuffix = randomUUID().slice(0, 8);
+  const oldRel = `old rel ${uniqueSuffix}`;
+  const existingRel = `existing rel ${uniqueSuffix}`;
+  const newRel = `renamed rel ${uniqueSuffix}`;
+  const tag = `rename tag ${uniqueSuffix}`;
+
+  const fileA = join(tmpdir(), `recondo-rename-a-${randomUUID()}.txt`);
+  const fileB = join(tmpdir(), `recondo-rename-b-${randomUUID()}.txt`);
+  writeFileSync(fileA, `Rename source content ${randomUUID()}`);
+  writeFileSync(fileB, `Existing rel content ${randomUUID()}`);
+
+  try {
+    await page.goto('/upload');
+    await page.getByLabel('Relationship', { exact: true }).fill(oldRel);
+    await page.getByLabel('Tag', { exact: true }).fill(tag);
+    await page.getByRole('button', { name: 'Add pair' }).click();
+    await page.locator('#file-input').setInputFiles(fileA);
+    await expect(page.locator('#upload-status')).toContainText('Upload complete');
+
+    await page.goto('/upload');
+    await page.getByLabel('Relationship', { exact: true }).fill(existingRel);
+    await page.getByLabel('Tag', { exact: true }).fill(tag);
+    await page.getByRole('button', { name: 'Add pair' }).click();
+    await page.locator('#file-input').setInputFiles(fileB);
+    await expect(page.locator('#upload-status')).toContainText('Upload complete');
+  } finally {
+    unlinkSync(fileA);
+    unlinkSync(fileB);
+  }
+
+  await page.goto(`/relationship/manage?name=${encodeURIComponent(oldRel)}`);
+  await expect(page.getByRole('heading', { level: 1, name: oldRel })).toBeVisible();
+
+  const renameButton = page.getByRole('button', { name: 'Rename' });
+  await expect(renameButton).toBeDisabled();
+
+  const mergeSearch = page.getByRole('searchbox', { name: 'SEARCH DESTINATION RELATIONSHIP' });
+  await mergeSearch.fill(existingRel);
+  await expect(page.getByRole('button', { name: `Merge into ${existingRel}` })).toBeVisible();
+  await expect(renameButton).toBeDisabled();
+
+  await mergeSearch.fill(newRel);
+  await expect(page.locator('#merge-relationship-suggestions')).toContainText(
+    `No other relationships match “${newRel}”.`,
+  );
+  await expect(renameButton).toBeEnabled();
+  await renameButton.click();
+
+  await expect(page.getByRole('heading', { level: 1, name: newRel })).toBeVisible();
+  await expect(page.locator('.relationship-tag-card', { hasText: tag })).toBeVisible();
+
+  await page.goto('/explore');
+  await page.getByRole('searchbox').fill(oldRel);
+  await expect(page.locator('#relationship-suggestions')).toContainText(
+    `No relationships match “${oldRel}”.`,
+  );
+});

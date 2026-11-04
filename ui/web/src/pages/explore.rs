@@ -166,7 +166,7 @@ pub fn render_manage(
                     p class="eyebrow" { "Manage relationship" }
                     h1 { (relationship) }
                     p class="section-description" {
-                        "Review the tags connected to this relationship or merge it into another relationship."
+                        "Review the tags connected to this relationship, merge it into another relationship, or rename it."
                     }
                 }
 
@@ -185,9 +185,11 @@ pub fn render_manage(
                             p class="eyebrow" { "CONSOLIDATE" }
                             h2 id="merge-relationship-heading" { "Merge into another " em { "relationship." } }
                             p class="section-description" {
-                                "Search for a destination relationship. Merging copies all tags from “"
+                                "Search for an existing destination relationship to merge into, or enter a new name to rename “"
                                 (relationship)
-                                "” into the selected relationship and deletes “"
+                                "”. Merging or renaming moves all tags from “"
+                                (relationship)
+                                "” to the destination relationship and deletes “"
                                 (relationship)
                                 "”."
                             }
@@ -206,7 +208,7 @@ pub fn render_manage(
                                     id="merge-relationship-query"
                                     type="search"
                                     name="merge_query"
-                                    placeholder="Search a relationship to merge into"
+                                    placeholder="Search a relationship to merge into or type a new name"
                                     autocomplete="off"
                                     aria-controls="merge-relationship-suggestions"
                                     data-bind:merge_query=""
@@ -219,6 +221,14 @@ pub fn render_manage(
                                 role="status"
                                 aria-live="polite" {
                                 p class="explore-hint" { "Type to search for a destination relationship." }
+                                div class="rename-relationship-actions" {
+                                    button
+                                        type="button"
+                                        class="button button-secondary relationship-rename-button"
+                                        disabled {
+                                        "Rename"
+                                    }
+                                }
                             }
                         }
                     }
@@ -229,13 +239,17 @@ pub fn render_manage(
 }
 
 pub fn merge_suggestions(source: &str, prefix: &str, relationships: &[String]) -> Markup {
+    let trimmed_prefix = prefix.trim();
+    let can_rename = !trimmed_prefix.is_empty()
+        && relationships.is_empty()
+        && !trimmed_prefix.eq_ignore_ascii_case(source);
     html! {
         div
             id="merge-relationship-suggestions"
             class="relationship-suggestions merge-relationship-suggestions"
             role="status"
             aria-live="polite" {
-            @if prefix.trim().is_empty() {
+            @if trimmed_prefix.is_empty() {
                 p class="explore-hint" { "Type to search for a destination relationship." }
             } @else if relationships.is_empty() {
                 p class="explore-hint" { "No other relationships match “" (prefix) "”." }
@@ -259,6 +273,26 @@ pub fn merge_suggestions(source: &str, prefix: &str, relationships: &[String]) -
                                 }
                             }
                         }
+                    }
+                }
+            }
+            div class="rename-relationship-actions" {
+                @if can_rename {
+                    form method="post" action="/relationship/manage/merge" class="merge-option-form" {
+                        input type="hidden" name="source" value=(source);
+                        input type="hidden" name="destination" value=(trimmed_prefix);
+                        button
+                            type="submit"
+                            class="button button-secondary relationship-rename-button" {
+                            "Rename"
+                        }
+                    }
+                } @else {
+                    button
+                        type="button"
+                        class="button button-secondary relationship-rename-button"
+                        disabled {
+                        "Rename"
                     }
                 }
             }
