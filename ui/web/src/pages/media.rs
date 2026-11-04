@@ -65,6 +65,11 @@ pub fn render(
         .collect::<Vec<_>>();
     let groups = group_state.groups;
     let add_to_groups = group_state.add_to_groups;
+    let return_to = if operation.is_grouped() {
+        group_state_url(groups, add_to_groups, limit, operation)
+    } else {
+        media_url(&tag_ids, limit, operation)
+    };
     layout::render(
         "Media results",
         html! {
@@ -220,7 +225,7 @@ pub fn render(
                             @if let Some(error) = error {
                                 p class="media-error" { "Media search failed: " (error) }
                             } @else if let Some(result) = result {
-                                (query_results(&result.media, operation))
+                                (query_results(&result.media, operation, &return_to))
                             } @else {
                                 p class="media-empty-state" { (empty_message) }
                             }
@@ -501,6 +506,15 @@ fn delete_group_url(
     group_state_url(&remaining_groups, &remaining_targets, limit, operation)
 }
 
+fn media_details_url(media_id: &str, return_to: &str) -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("id", media_id);
+    if !return_to.is_empty() {
+        serializer.append_pair("return_to", return_to);
+    }
+    format!("/media/details?{}", serializer.finish())
+}
+
 fn media_url(tag_ids: &[String], limit: usize, operation: Operation) -> String {
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
     for tag_id in tag_ids {
@@ -615,7 +629,7 @@ fn group_mode_button(
     }
 }
 
-fn query_results(items: &MediaQueryItems, operation: Operation) -> Markup {
+fn query_results(items: &MediaQueryItems, operation: Operation, return_to: &str) -> Markup {
     match items {
         MediaQueryItems::Count(count) => html! {
             div class="media-count-result" {
@@ -643,7 +657,7 @@ fn query_results(items: &MediaQueryItems, operation: Operation) -> Markup {
             }
             div class="media-item-grid" {
                 @for item in items {
-                    (media_card(item))
+                    (media_card(item, return_to))
                 }
             }
         },
@@ -1164,7 +1178,7 @@ pub fn details_picker_tags(
     }
 }
 
-fn media_card(item: &Media) -> Markup {
+fn media_card(item: &Media, return_to: &str) -> Markup {
     let asset_url = format!("/asset/{}", item.id.as_str());
     let title = item.title.as_deref().unwrap_or_else(|| item.id.as_str());
     let download_name = item
@@ -1181,6 +1195,19 @@ fn media_card(item: &Media) -> Markup {
         .as_deref()
         .unwrap_or("application/octet-stream");
 
+    let is_video = mime_type.starts_with("video/");
+    let title_markup = if is_video {
+        html! {
+            h3 {
+                a class="media-item-title-link" href=(media_details_url(item.id.as_str(), return_to)) {
+                    (title)
+                }
+            }
+        }
+    } else {
+        html! { h3 { (title) } }
+    };
+
     html! {
         article class="media-item-card" data-testid="media-card" {
             div class="media-preview" {
@@ -1191,7 +1218,7 @@ fn media_card(item: &Media) -> Markup {
                         loading="lazy"
                         data-media-id=(item.id.as_str())
                         data-on:click="window.openMediaLightbox(el)";
-                } @else if mime_type.starts_with("video/") {
+                } @else if is_video {
                     video controls preload="metadata" src=(asset_url) {
                         "Your browser does not support embedded video."
                     }
@@ -1203,7 +1230,7 @@ fn media_card(item: &Media) -> Markup {
                 }
             }
             div class="media-item-info" {
-                h3 { (title) }
+                (title_markup)
                 p { (mime_type) }
             }
         }
@@ -1228,10 +1255,12 @@ mod tests {
             }),
         );
 
-        let html = media_card(&media).into_string();
+        let html = media_card(&media, "/media?tag=abc&limit=10").into_string();
 
         assert!(html.contains("<video controls"));
         assert!(html.contains("src=\"/asset/video-id\""));
         assert!(!html.contains("Download file"));
+        assert!(html.contains("media-item-title-link"));
+        assert!(html.contains("/media/details?id=video-id&amp;return_to=%2Fmedia%3Ftag%3Dabc%26limit%3D10"));
     }
 }
