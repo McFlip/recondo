@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './fixtures/test';
 import { randomUUID } from 'node:crypto';
 import { unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -121,7 +121,7 @@ test('Explore tags open media results with removable selection and media viewers
   await expect(page.locator('#media-lightbox')).not.toBeVisible();
 
   await page.getByRole('link', { name: 'Remove needs tags' }).click();
-  await expect(page).toHaveURL('/explore');
+  await expect(page).toHaveURL(/\/explore$/);
   await expect(page.getByRole('heading', { name: 'Explore your collection.' })).toBeVisible();
 });
 
@@ -432,4 +432,102 @@ test('media title can be edited from details page', async ({ page }) => {
   await page.getByRole('button', { name: 'Update title' }).click();
   await expect(page.locator('.details-tag-notice')).toContainText('Title updated');
   await expect(page.locator('#details-media-title')).toHaveValue('Edited Title');
+});
+
+test('Recycle bin page loads', async ({ page }) => {
+  await page.goto('/recycle-bin');
+  await expect(page).toHaveURL(/\/recycle-bin/);
+});
+
+async function recycleFirstImage(page: Page) {
+  await seedMedia(page);
+  await page.goto('/explore');
+  await page.getByRole('searchbox').fill('to');
+  await page.getByRole('button', { name: 'to do' }).click();
+  await page.getByRole('link', { name: 'needs tags' }).click();
+  await page.getByLabel('DISPLAY LIMIT').selectOption('400');
+  await page.locator('.media-preview img').first().click();
+  await page.locator('#media-lightbox-open').click();
+  await expect(page).toHaveURL(/\/media\/details\?id=/);
+  const id = new URL(page.url()).searchParams.get('id')!;
+  await page.getByRole('button', { name: 'Move to recycle bin' }).click();
+  await expect(page).not.toHaveURL(/\/media\/details/);
+  return id;
+}
+
+async function recycleFirstRemainingImage(page: Page) {
+  await page.goto('/explore');
+  await page.getByRole('searchbox').fill('to');
+  await page.getByRole('button', { name: 'to do' }).click();
+  await page.getByRole('link', { name: 'needs tags' }).click();
+  await page.getByLabel('DISPLAY LIMIT').selectOption('400');
+  await page.locator('.media-preview img').first().click();
+  await page.locator('#media-lightbox-open').click();
+  await expect(page).toHaveURL(/\/media\/details\?id=/);
+  const id = new URL(page.url()).searchParams.get('id')!;
+  await page.getByRole('button', { name: 'Move to recycle bin' }).click();
+  await expect(page).not.toHaveURL(/\/media\/details/);
+  return id;
+}
+
+test.describe.serial('Recycle bin workflow', () => {
+  test('recycled item appears in recycle bin', async ({ page }) => {
+    const id = await recycleFirstImage(page);
+    await page.goto('/recycle-bin');
+    await expect(
+      page.locator(`[data-testid="recycled-media-card"][data-media-id="${id}"]`),
+    ).toBeVisible();
+    // cleanup
+    const card = page.locator(`[data-testid="recycled-media-card"][data-media-id="${id}"]`);
+    await card.getByRole('button', { name: 'Delete permanently' }).click();
+    await expect(page.locator('.details-tag-notice')).toContainText('Item permanently deleted.');
+  });
+
+  test('restoring recycled item restores its tags', async ({ page }) => {
+    const id = await recycleFirstImage(page);
+    await page.goto('/recycle-bin');
+    const card = page.locator(`[data-testid="recycled-media-card"][data-media-id="${id}"]`);
+    await card.getByRole('button', { name: 'Restore' }).click();
+    await expect(page.locator('.details-tag-notice')).toContainText('Item restored.');
+    await expect(
+      page.locator(`[data-testid="recycled-media-card"][data-media-id="${id}"]`),
+    ).toHaveCount(0);
+    // verify tags restored
+    await page.goto(`/media/details?id=${id}`);
+    await expect(page.locator('.details-tag-list')).toContainText('needs tags');
+  });
+
+  test('recycled media asset still loads', async ({ page, server }) => {
+    const id = await recycleFirstImage(page);
+    const response = await page.request.get(`${server.url}/asset/${id}`);
+    expect(response.ok()).toBeTruthy();
+    // cleanup
+    await page.goto('/recycle-bin');
+    const card = page.locator(`[data-testid="recycled-media-card"][data-media-id="${id}"]`);
+    await card.getByRole('button', { name: 'Delete permanently' }).click();
+  });
+
+  test('permanently deletes recycled item', async ({ page, server }) => {
+    const id = await recycleFirstImage(page);
+    await page.goto('/recycle-bin');
+    const card = page.locator(`[data-testid="recycled-media-card"][data-media-id="${id}"]`);
+    await card.getByRole('button', { name: 'Delete permanently' }).click();
+    await expect(page.locator('.details-tag-notice')).toContainText('Item permanently deleted.');
+    await expect(
+      page.locator(`[data-testid="recycled-media-card"][data-media-id="${id}"]`),
+    ).toHaveCount(0);
+    const response = await page.request.get(`${server.url}/asset/${id}`);
+    expect(response.status()).not.toBe(200);
+  });
+
+  test('empty recycle bin removes all items', async ({ page }) => {
+    await seedMedia(page);
+    await recycleFirstRemainingImage(page);
+    await recycleFirstRemainingImage(page);
+    await page.goto('/recycle-bin');
+    await expect(page.locator('[data-testid="recycled-media-card"]')).toHaveCount(2);
+    await page.getByRole('button', { name: 'Empty recycle bin' }).click();
+    await expect(page.locator('.details-tag-notice')).toContainText('Recycle bin emptied.');
+    await expect(page.locator('[data-testid="recycle-bin-empty"]')).toBeVisible();
+  });
 });

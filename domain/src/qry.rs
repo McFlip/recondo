@@ -575,11 +575,11 @@ mod tests {
             &self,
             _media_id: &MediaId,
             _tags: &[(String, Tag)],
-        ) -> Result<(), Self::Error> {
+        ) -> Result<crate::model::ApplyUploadTagsOutcome, Self::Error> {
             if self.should_fail {
                 Err(MockError)
             } else {
-                Ok(())
+                Ok(crate::model::ApplyUploadTagsOutcome::Applied)
             }
         }
 
@@ -1259,4 +1259,17 @@ mod tests {
         let result = get_relationships_by_prefix("to", None, &repo);
         assert!(result.is_err());
     }
+}
+
+pub fn get_recycled_media<R: crate::repository::MediaRepository>(
+    repo: &R,
+) -> Result<Vec<crate::model::RecycledMedia>, R::Error> {
+    repo.list_recycled_media()
+}
+
+pub fn get_recycled_media_by_id<R: crate::repository::MediaRepository>(
+    id: &crate::model::MediaId,
+    repo: &R,
+) -> Result<Option<crate::model::RecycledMedia>, R::Error> {
+    repo.get_recycled_media(id)
 }

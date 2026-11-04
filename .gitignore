@@ -30,3 +30,4 @@ node_modules/
 /playwright/.cache/
 /playwright/.auth/
 .playwright-cli/
+.pw-binary-path

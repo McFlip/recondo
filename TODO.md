@@ -4,11 +4,11 @@
   - [ ] Save a collection
   - [ ] Add tags to collection
   - [ ] Add media to collection
-- [ ] Manage an Item
-  - [ ] Delete
-  - [ ] Recycle Bin?
-  - [ ] Details page for videos
+- [x] Manage an Item
+  - [x] Delete
+  - [x] Recycle Bin?
+  - [x] Details page for videos
 - [ ] Manage a Relationship
-  - [ ] Merge
+  - [x] Merge
   - [ ] Alias
 

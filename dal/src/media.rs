@@ -1,4 +1,4 @@
-use recondo_domain::model::{Media, MediaId, Tag, normalize_relationship};
+use recondo_domain::model::{Media, MediaId, RecycledMedia, Tag, normalize_relationship};
 use recondo_domain::repository::{MediaRepository, SaveMediaError};
 use redb::{Database, Error, ReadableDatabase, ReadableTable, TableDefinition};
 use std::fs;
@@ -16,6 +16,7 @@ type EdgeFrmMedia = (String, String);
 const MEDIA: TableDefinition<&str, &str> = TableDefinition::new("MEDIA");
 pub(super) const MEDIA_ADJ_LST: TableDefinition<&str, Vec<EdgeFrmMedia>> =
     TableDefinition::new("MEDIA_ADJ_LST");
+const RECYCLE_BIN: TableDefinition<&str, &str> = TableDefinition::new("RECYCLE_BIN");
 
 pub fn init_db(db: &Database) -> Result<(), Error> {
     let write_txn = db.begin_write()?;
@@ -24,6 +25,7 @@ pub fn init_db(db: &Database) -> Result<(), Error> {
     let _ = write_txn.open_table(TAG_ADJ_LST)?;
     let _ = write_txn.open_table(TAG)?;
     let _ = write_txn.open_table(tag::RELATIONSHIP_TO_TAGS)?;
+    let _ = write_txn.open_table(RECYCLE_BIN)?;
     write_txn.commit()?;
     Ok(())
 }
@@ -31,8 +33,12 @@ pub fn init_db(db: &Database) -> Result<(), Error> {
 pub fn does_media_exist(db: &Database, id: MediaId) -> Result<bool, Error> {
     let read_txn = db.begin_read()?;
     let table = read_txn.open_table(MEDIA_ADJ_LST)?;
-    let value = table.get(id.as_str())?;
-    Ok(value.is_some())
+    if table.get(id.as_str())?.is_some() {
+        return Ok(true);
+    }
+    // also consider recycled items as existing
+    let rb = read_txn.open_table(RECYCLE_BIN)?;
+    Ok(rb.get(id.as_str())?.is_some())
 }
 
 pub fn insert_media_record_txn(txn: &redb::WriteTransaction, media: &Media) -> Result<(), Error> {
@@ -68,6 +74,255 @@ pub fn get_media_adj_list(db: &Database, id: &MediaId) -> Result<Option<Vec<Edge
         return Ok(None);
     };
     Ok(Some(value.value()))
+}
+
+pub fn get_recycled_media(db: &Database, id: &MediaId) -> Result<Option<RecycledMedia>, Error> {
+    let read_txn = db.begin_read()?;
+    let table = read_txn.open_table(RECYCLE_BIN)?;
+    let Some(value) = table.get(id.as_str())? else {
+        return Ok(None);
+    };
+    let rm: RecycledMedia = serde_json::from_str(value.value())
+        .map_err(|e| Error::Corrupted(format!("Failed to deserialize recycled media: {e}")))?;
+    Ok(Some(rm))
+}
+
+pub fn list_recycled_media(db: &Database) -> Result<Vec<RecycledMedia>, Error> {
+    let read_txn = db.begin_read()?;
+    let table = read_txn.open_table(RECYCLE_BIN)?;
+    let mut out = Vec::new();
+    for entry in table.iter()? {
+        let (_k, v) = entry?;
+        let rm: RecycledMedia = serde_json::from_str(v.value())
+            .map_err(|e| Error::Corrupted(format!("Failed to deserialize recycled media: {e}")))?;
+        out.push(rm);
+    }
+    out.sort_by(|a, b| a.media.id.as_str().cmp(b.media.id.as_str()));
+    Ok(out)
+}
+
+pub fn recycle_media(db: &Database, id: &MediaId) -> Result<Option<RecycledMedia>, Error> {
+    let write_txn = db.begin_write()?;
+    let recycled = {
+        // 1. remove media record
+        let removed_json = {
+            let mut media_table = write_txn.open_table(MEDIA)?;
+            media_table.remove(id.as_str())?.map(|v| v.value().to_string())
+        };
+        let media_json = match removed_json {
+            Some(v) => v,
+            None => {
+                write_txn.abort()?;
+                return Ok(None);
+            }
+        };
+        let media: Media = serde_json::from_str(&media_json)
+            .map_err(|e| Error::Corrupted(format!("Failed to deserialize media: {e}")))?;
+        // 2. remove media adj list -> edges
+        let mut media_adj = write_txn.open_table(MEDIA_ADJ_LST)?;
+        let edges: Vec<(String, String)> = media_adj
+            .remove(id.as_str())?
+            .map(|v| v.value())
+            .unwrap_or_default();
+        // 3. resolve tags before pruning
+        let mut tag_table = write_txn.open_table(TAG)?;
+        let mut tags: Vec<(String, Tag)> = Vec::new();
+        for (rel, tag_id) in &edges {
+            if let Some(v) = tag_table.get(tag_id.as_str())? {
+                let name = v.value().to_string();
+                tags.push((rel.clone(), Tag::from_parts(tag_id.clone(), name)));
+            }
+        }
+        // 4. prune
+        let mut tag_adj = write_txn.open_table(TAG_ADJ_LST)?;
+        let mut rel_table = write_txn.open_table(tag::RELATIONSHIP_TO_TAGS)?;
+        for (rel, tag_id) in &edges {
+            // remove (rel, media_id) from TAG_ADJ_LST[tag_id]
+            let existing = tag_adj
+                .get(tag_id.as_str())?
+                .map(|v| v.value())
+                .unwrap_or_default();
+            let remaining: Vec<(String, String)> = existing
+                .into_iter()
+                .filter(|e| !(e.0 == *rel && e.1 == id.as_str()))
+                .collect();
+            if remaining.is_empty() {
+                tag_adj.remove(tag_id.as_str())?;
+                tag_table.remove(tag_id.as_str())?;
+            } else {
+                tag_adj.insert(tag_id.as_str(), remaining.clone())?;
+            }
+            // check if rel still used by tag_id
+            let rel_still_used = remaining.iter().any(|e| e.0 == *rel);
+            if !rel_still_used {
+                let existing_list: Option<Vec<String>> = rel_table.get(rel.as_str())?.map(|g| g.value());
+                if let Some(mut list) = existing_list {
+                    list.retain(|t| t != tag_id);
+                    if list.is_empty() {
+                        rel_table.remove(rel.as_str())?;
+                    } else {
+                        rel_table.insert(rel.as_str(), list)?;
+                    }
+                }
+            }
+        }
+        let recycled = RecycledMedia { media, tags };
+        // store in RECYCLE_BIN
+        let json = serde_json::to_string(&recycled)
+            .map_err(|e| Error::Corrupted(format!("Failed to serialize recycled media: {e}")))?;
+        let mut rb = write_txn.open_table(RECYCLE_BIN)?;
+        rb.insert(id.as_str(), json.as_str())?;
+        recycled
+    };
+    write_txn.commit()?;
+    Ok(Some(recycled))
+}
+
+pub fn restore_recycled_media(db: &Database, id: &MediaId) -> Result<Option<RecycledMedia>, Error> {
+    let write_txn = db.begin_write()?;
+    let recycled = {
+        let removed_json = {
+            let mut rb = write_txn.open_table(RECYCLE_BIN)?;
+            rb.remove(id.as_str())?.map(|v| v.value().to_string())
+        };
+        let json = match removed_json {
+            Some(v) => v,
+            None => {
+                write_txn.abort()?;
+                return Ok(None);
+            }
+        };
+        let recycled: RecycledMedia = serde_json::from_str(&json)
+            .map_err(|e| Error::Corrupted(format!("Failed to deserialize recycled media: {e}")))?;
+        // insert media
+        insert_media_record_txn(&write_txn, &recycled.media)?;
+        // restore tags
+        let tags = if recycled.tags.is_empty() {
+            vec![default_upload_tag()]
+        } else {
+            recycled.tags.clone()
+        };
+        // reuse logic: open tables
+        let mut media_table = write_txn.open_table(MEDIA_ADJ_LST)?;
+        let mut tag_table = write_txn.open_table(TAG_ADJ_LST)?;
+        let mut tag_name_table = write_txn.open_table(TAG)?;
+        for (relationship, tag) in &tags {
+            let relationship = normalize_relationship(relationship);
+            if relationship.is_empty() { continue; }
+            let media_edge = (relationship.clone(), tag.id().to_string());
+            let existing_media = media_table
+                .get(id.as_str())?
+                .map(|v| v.value())
+                .unwrap_or_default();
+            if !existing_media.contains(&media_edge) {
+                let mut edges = existing_media;
+                edges.push(media_edge);
+                media_table.insert(id.as_str(), edges)?;
+            }
+            let tag_edge = (relationship.clone(), id.as_str().to_string());
+            let existing_tag = tag_table
+                .get(tag.id())?
+                .map(|v| v.value())
+                .unwrap_or_default();
+            if !existing_tag.contains(&tag_edge) {
+                let mut edges = existing_tag;
+                edges.push(tag_edge);
+                tag_table.insert(tag.id(), edges)?;
+            }
+            tag_name_table.insert(tag.id(), tag.name())?;
+            upsert_relationship_tag_txn(&write_txn, &relationship, tag.id()).map_err(|e| match e {
+                crate::tag::RelationshipSetError::EmptyRelationship => Error::Corrupted("empty rel".into()),
+                crate::tag::RelationshipSetError::Repository(e) => e,
+            })?;
+        }
+        recycled
+    };
+    write_txn.commit()?;
+    Ok(Some(recycled))
+}
+
+pub fn delete_recycled_media(
+    db: &Database,
+    id: &MediaId,
+    assets_dir: &Path,
+) -> Result<bool, recondo_domain::repository::DeleteMediaError<Error>> {
+    use recondo_domain::repository::DeleteMediaError;
+    let rm = match get_recycled_media(db, id).map_err(DeleteMediaError::Repository)? {
+        Some(r) => r,
+        None => return Ok(false),
+    };
+    let path = std::path::Path::new(rm.media.url.path());
+    let file_name = path.file_name().unwrap_or_default();
+    let resolved = assets_dir.join(file_name);
+    let should_delete_file = resolved.file_stem().and_then(|s| s.to_str()) == Some(id.as_str());
+    // Remove the record first so a crash cannot leave a dangling reference.
+    let write_txn = db
+        .begin_write()
+        .map_err(|e| DeleteMediaError::Repository(e.into()))?;
+    {
+        let mut rb = write_txn
+            .open_table(RECYCLE_BIN)
+            .map_err(|e| DeleteMediaError::Repository(e.into()))?;
+        rb.remove(id.as_str())
+            .map_err(|e| DeleteMediaError::Repository(e.into()))?;
+    }
+    write_txn
+        .commit()
+        .map_err(|e| DeleteMediaError::Repository(e.into()))?;
+    if should_delete_file {
+        match fs::remove_file(&resolved) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(DeleteMediaError::Io(e)),
+        }
+    }
+    Ok(true)
+}
+
+pub fn empty_recycle_bin(
+    db: &Database,
+    assets_dir: &Path,
+) -> Result<usize, recondo_domain::repository::DeleteMediaError<Error>> {
+    use recondo_domain::repository::DeleteMediaError;
+    let items = list_recycled_media(db).map_err(DeleteMediaError::Repository)?;
+    let count = items.len();
+    // Collect asset paths before mutating the database.
+    let files: Vec<std::path::PathBuf> = items
+        .iter()
+        .map(|rm| {
+            let path = std::path::Path::new(rm.media.url.path());
+            let file_name = path.file_name().unwrap_or_default();
+            assets_dir.join(file_name)
+        })
+        .collect();
+    let ids: Vec<String> = items.iter().map(|rm| rm.media.id.as_str().to_string()).collect();
+    // Remove records first so a crash cannot leave dangling references.
+    let write_txn = db
+        .begin_write()
+        .map_err(|e| DeleteMediaError::Repository(e.into()))?;
+    {
+        let mut rb = write_txn
+            .open_table(RECYCLE_BIN)
+            .map_err(|e| DeleteMediaError::Repository(e.into()))?;
+        for k in &ids {
+            rb.remove(k.as_str())
+                .map_err(|e| DeleteMediaError::Repository(e.into()))?;
+        }
+    }
+    write_txn
+        .commit()
+        .map_err(|e| DeleteMediaError::Repository(e.into()))?;
+    // Best-effort file cleanup afterwards.
+    for (rm, resolved) in items.iter().zip(files.iter()) {
+        if resolved.file_stem().and_then(|s| s.to_str()) == Some(rm.media.id.as_str()) {
+            match fs::remove_file(resolved) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(DeleteMediaError::Io(e)),
+            }
+        }
+    }
+    Ok(count)
 }
 
 pub struct RedbMediaRepository {
@@ -192,17 +447,22 @@ fn apply_upload_tags_to_duplicate(
     db: &Database,
     media_id: &MediaId,
     tags: &[(String, Tag)],
-) -> Result<(), Error> {
+) -> Result<recondo_domain::model::ApplyUploadTagsOutcome, Error> {
     let write_txn = db.begin_write()?;
     {
         let (default_relationship, default_tag) = default_upload_tag();
         let default_edge = (default_relationship.clone(), default_tag.id().to_string());
         let default_tag_edge = (default_relationship.clone(), media_id.as_str().to_string());
         let mut media_table = write_txn.open_table(MEDIA_ADJ_LST)?;
-        let mut media_edges = media_table
+        let media_edges_val: Option<Vec<(String, String)>> = media_table
             .get(media_id.as_str())?
-            .ok_or_else(|| Error::Corrupted("duplicate media has no tag adjacency list".into()))?
-            .value();
+            .map(|g| g.value());
+        let Some(mut media_edges) = media_edges_val else {
+            // Media may be in recycle bin; do not mutate.
+            drop(media_table);
+            write_txn.abort()?;
+            return Ok(recondo_domain::model::ApplyUploadTagsOutcome::Recycled);
+        };
 
         if media_edges.len() == 1 && media_edges.first() == Some(&default_edge) {
             media_edges.clear();
@@ -259,7 +519,7 @@ fn apply_upload_tags_to_duplicate(
         }
     }
     write_txn.commit()?;
-    Ok(())
+    Ok(recondo_domain::model::ApplyUploadTagsOutcome::Applied)
 }
 
 impl MediaRepository for RedbMediaRepository {
@@ -302,9 +562,9 @@ impl MediaRepository for RedbMediaRepository {
         &self,
         media_id: &MediaId,
         tags: &[(String, Tag)],
-    ) -> Result<(), Self::Error> {
+    ) -> Result<recondo_domain::model::ApplyUploadTagsOutcome, Self::Error> {
         if tags.is_empty() {
-            return Ok(());
+            return Ok(recondo_domain::model::ApplyUploadTagsOutcome::Applied);
         }
         apply_upload_tags_to_duplicate(&self.db, media_id, tags)
     }
@@ -322,6 +582,25 @@ impl MediaRepository for RedbMediaRepository {
         id: &MediaId,
     ) -> Result<Option<Vec<(String, String)>>, Self::Error> {
         get_media_adj_list(&self.db, id)
+    }
+
+    fn recycle_media(&self, id: &MediaId) -> Result<Option<RecycledMedia>, Self::Error> {
+        recycle_media(&self.db, id)
+    }
+    fn restore_recycled_media(&self, id: &MediaId) -> Result<Option<RecycledMedia>, Self::Error> {
+        restore_recycled_media(&self.db, id)
+    }
+    fn get_recycled_media(&self, id: &MediaId) -> Result<Option<RecycledMedia>, Self::Error> {
+        get_recycled_media(&self.db, id)
+    }
+    fn list_recycled_media(&self) -> Result<Vec<RecycledMedia>, Self::Error> {
+        list_recycled_media(&self.db)
+    }
+    fn delete_recycled_media(&self, id: &MediaId, assets_dir: &Path) -> Result<bool, recondo_domain::repository::DeleteMediaError<Self::Error>> {
+        delete_recycled_media(&self.db, id, assets_dir)
+    }
+    fn empty_recycle_bin(&self, assets_dir: &Path) -> Result<usize, recondo_domain::repository::DeleteMediaError<Self::Error>> {
+        empty_recycle_bin(&self.db, assets_dir)
     }
 }
 

@@ -19,14 +19,15 @@ use datastar::{
 use recondo_dal::media::RedbMediaRepository;
 use recondo_domain::cmd::{
     CreateMediaOutcome, add_tag_to_media, create_media_from_file_in_with_tags_and_title,
-    merge_relationship, remove_tag_from_media,
+    empty_recycle_bin, merge_relationship, permanently_delete_media, recycle_media,
+    remove_tag_from_media, restore_media,
 };
 use recondo_domain::model::{MediaId, Tag, normalize_relationship};
 use recondo_domain::repository::{MediaRepository, TagRepository};
 use recondo_domain::{
     get_enriched_media_by_logical_and, get_enriched_media_by_logical_and_then_or,
     get_enriched_media_by_logical_or, get_enriched_media_by_logical_or_then_and,
-    get_relationships_by_prefix, get_tag_adj_list, get_tags_by_relationship,
+    get_recycled_media, get_relationships_by_prefix, get_tag_adj_list, get_tags_by_relationship,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio_stream::iter;
@@ -34,6 +35,7 @@ use tokio_stream::iter;
 use crate::pages::explore;
 use crate::pages::landing;
 use crate::pages::media;
+use crate::pages::recycle;
 use crate::pages::upload;
 
 #[derive(Clone)]
@@ -60,6 +62,7 @@ pub fn router(state: AppState) -> Router {
         .route("/media/details/tag", post(add_media_detail_tag))
         .route("/media/details/tag/remove", post(remove_media_detail_tag))
         .route("/media/details/title", post(update_media_detail_title))
+        .route("/media/details/recycle", post(recycle_media_detail_handler))
         .route(
             "/media/details/relationship-search",
             get(media_detail_relationship_search),
@@ -77,6 +80,10 @@ pub fn router(state: AppState) -> Router {
         .route("/asset/{id}", get(media_asset_by_id))
         .route("/upload", get(upload_page))
         .route("/upload", post(upload_handler))
+        .route("/recycle-bin", get(recycle_bin_page))
+        .route("/recycle-bin/restore", post(restore_recycled_handler))
+        .route("/recycle-bin/delete", post(delete_recycled_handler))
+        .route("/recycle-bin/empty", post(empty_recycled_handler))
         .route(
             "/upload/relationship-search",
             get(search_upload_relationships),
@@ -117,6 +124,129 @@ async fn landing_page() -> maud::Markup {
 
 async fn upload_page() -> maud::Markup {
     upload::render()
+}
+
+async fn recycle_bin_page(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let repo = state.repo;
+    let result = tokio::task::spawn_blocking(move || get_recycled_media(repo.as_ref())).await;
+    match result {
+        Ok(Ok(items)) => recycle::render_recycle_bin(
+            &items,
+            params.get("notice").map(String::as_str),
+            params.get("error").map(String::as_str),
+        )
+        .into_response(),
+        Ok(Err(error)) => {
+            eprintln!("Could not load recycle bin: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(error) => {
+            eprintln!("Recycle bin task failed: {error}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+fn recycle_bin_redirect(notice: Option<&str>, error: Option<&str>) -> Response {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    if let Some(notice) = notice {
+        serializer.append_pair("notice", notice);
+    }
+    if let Some(error) = error {
+        serializer.append_pair("error", error);
+    }
+    let query = serializer.finish();
+    if query.is_empty() {
+        Redirect::to("/recycle-bin").into_response()
+    } else {
+        Redirect::to(&format!("/recycle-bin?{query}")).into_response()
+    }
+}
+
+async fn restore_recycled_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    let fields = match parse_form_fields(&body) {
+        Ok(fields) => fields,
+        Err(error) => {
+            eprintln!("Invalid restore form: {error}");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+    let Some(media_id) = fields.get("media_id") else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Ok(media_id) = MediaId::from_hash(media_id.clone()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let repo = state.repo;
+    match tokio::task::spawn_blocking(move || restore_media(&media_id, repo.as_ref())).await {
+        Ok(Ok(Some(_))) => recycle_bin_redirect(Some("Item restored."), None),
+        Ok(Ok(None)) => recycle_bin_redirect(None, Some("Item not found in recycle bin.")),
+        Ok(Err(error)) => {
+            eprintln!("Could not restore media: {error}");
+            recycle_bin_redirect(None, Some("Could not restore item."))
+        }
+        Err(error) => {
+            eprintln!("Restore media task failed: {error}");
+            recycle_bin_redirect(None, Some("Could not restore item."))
+        }
+    }
+}
+
+async fn delete_recycled_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    let fields = match parse_form_fields(&body) {
+        Ok(fields) => fields,
+        Err(error) => {
+            eprintln!("Invalid delete form: {error}");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+    let Some(media_id) = fields.get("media_id") else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Ok(media_id) = MediaId::from_hash(media_id.clone()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let repo = state.repo;
+    let assets_dir = state.assets_dir;
+    match tokio::task::spawn_blocking(move || {
+        permanently_delete_media(&media_id, &assets_dir, repo.as_ref())
+    })
+    .await
+    {
+        Ok(Ok(true)) => recycle_bin_redirect(Some("Item permanently deleted."), None),
+        Ok(Ok(false)) => recycle_bin_redirect(None, Some("Item not found in recycle bin.")),
+        Ok(Err(error)) => {
+            eprintln!("Could not permanently delete media: {error}");
+            recycle_bin_redirect(None, Some("Could not delete item."))
+        }
+        Err(error) => {
+            eprintln!("Delete media task failed: {error}");
+            recycle_bin_redirect(None, Some("Could not delete item."))
+        }
+    }
+}
+
+async fn empty_recycled_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    if let Err(error) = parse_form_fields(&body) {
+        eprintln!("Invalid empty recycle form: {error}");
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let repo = state.repo;
+    let assets_dir = state.assets_dir;
+    match tokio::task::spawn_blocking(move || empty_recycle_bin(&assets_dir, repo.as_ref())).await {
+        Ok(Ok(_)) => recycle_bin_redirect(Some("Recycle bin emptied."), None),
+        Ok(Err(error)) => {
+            eprintln!("Could not empty recycle bin: {error}");
+            recycle_bin_redirect(None, Some("Could not empty recycle bin."))
+        }
+        Err(error) => {
+            eprintln!("Empty recycle bin task failed: {error}");
+            recycle_bin_redirect(None, Some("Could not empty recycle bin."))
+        }
+    }
 }
 
 async fn upload_script() -> impl IntoResponse {
@@ -511,6 +641,51 @@ async fn update_media_detail_title(State(state): State<AppState>, body: Bytes) -
         Err(error) => {
             eprintln!("Media title update task failed for {}: {error}", media_id.as_str());
             details_redirect(&media_id, return_to, None, Some("Could not update title."))
+        }
+    }
+}
+
+async fn recycle_media_detail_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    let fields = match parse_form_fields(&body) {
+        Ok(fields) => fields,
+        Err(error) => {
+            eprintln!("Invalid media recycle form: {error}");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+    let Some(media_id) = fields.get("media_id") else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Ok(media_id) = MediaId::from_hash(media_id.clone()) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let return_to = valid_media_return_url(fields.get("return_to").map(String::as_str))
+        .map(str::to_string);
+    let repo = state.repo;
+    let cmd_id = media_id.clone();
+    match tokio::task::spawn_blocking(move || recycle_media(&cmd_id, repo.as_ref())).await {
+        Ok(Ok(Some(_))) => {
+            let dest = return_to.as_deref().unwrap_or("/explore");
+            Redirect::to(dest).into_response()
+        }
+        Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
+        Ok(Err(error)) => {
+            eprintln!("Could not recycle media {}: {error}", media_id.as_str());
+            details_redirect(
+                &media_id,
+                return_to.as_deref(),
+                None,
+                Some("Could not move item to recycle bin."),
+            )
+        }
+        Err(error) => {
+            eprintln!("Media recycle task failed for {}: {error}", media_id.as_str());
+            details_redirect(
+                &media_id,
+                return_to.as_deref(),
+                None,
+                Some("Could not move item to recycle bin."),
+            )
         }
     }
 }
@@ -1643,7 +1818,17 @@ async fn media_asset_by_id(
         return StatusCode::NOT_FOUND.into_response();
     };
     let repo = state.repo;
-    let media = match tokio::task::spawn_blocking(move || repo.get_media(&media_id)).await {
+    let media = match tokio::task::spawn_blocking(move || {
+        if let Some(media) = repo.get_media(&media_id).map_err(|e| e.to_string())? {
+            return Ok::<_, String>(Some(media));
+        }
+        Ok(repo
+            .get_recycled_media(&media_id)
+            .map_err(|e| e.to_string())?
+            .map(|rm| rm.media))
+    })
+    .await
+    {
         Ok(Ok(Some(media))) => media,
         Ok(Ok(None)) => return StatusCode::NOT_FOUND.into_response(),
         Ok(Err(error)) => {

@@ -51,6 +51,18 @@ pub struct Media {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecycledMedia {
+    pub media: Media,
+    pub tags: Vec<(String, Tag)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyUploadTagsOutcome {
+    Applied,
+    Recycled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MediaOpts {
     pub title: Option<String>,
     pub mime_type: Option<String>,

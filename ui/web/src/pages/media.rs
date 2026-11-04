@@ -923,7 +923,24 @@ pub fn render_details(
                     a class="back-button" href=(return_to) { "← Back to results" }
                 }
                 div class="details-meta" {
-                    h1 { (title) }
+                    div class="details-header-row" {
+                        h1 { (title) }
+                        form class="details-recycle-form" method="post" action="/media/details/recycle" {
+                            input type="hidden" name="media_id" value=(media_id);
+                            @if let Some(return_to) = return_to {
+                                input type="hidden" name="return_to" value=(return_to);
+                            }
+                            button
+                                type="submit"
+                                class="media-group-delete details-recycle-button"
+                                aria-label="Move to recycle bin"
+                                title="Move to recycle bin" {
+                                svg class="media-trash-icon" viewBox="0 0 24 24" aria-hidden="true" {
+                                    path d="M4 7h16M10 11v6m4-6v6M5 7l1 14h12l1-14M9 7V4h6v3";
+                                }
+                            }
+                        }
+                    }
                     p { "MIME: " (mime_type) }
                     p { "Size: " (size_display) }
                     p { "Views: " (media.view_count) }

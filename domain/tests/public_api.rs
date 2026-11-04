@@ -1,6 +1,6 @@
 use recondo_domain::{
     cmd::{CreateMediaOutcome, add_tag_to_media, create_media_from_file},
-    model::{Media, MediaId, MediaOpts, Tag},
+    model::{Media, MediaId, MediaOpts, RecycledMedia, Tag},
     qry::{
         CountedTag, MediaQueryItems, RelationshipTagGroup, filter_out_tags,
         get_enriched_media_by_logical_and, get_enriched_media_by_logical_and_then_or,
@@ -10,7 +10,7 @@ use recondo_domain::{
         get_media_ids_by_logical_or_then_and, get_relationships_by_prefix, get_tag_adj_list,
         get_tags_by_relationship,
     },
-    repository::{MediaRepository, SaveMediaError, TagRepository},
+    repository::{DeleteMediaError, MediaRepository, SaveMediaError, TagRepository},
 };
 use std::{
     cell::RefCell,
@@ -79,8 +79,8 @@ impl MediaRepository for TestRepo {
         &self,
         _media_id: &MediaId,
         _tags: &[(String, Tag)],
-    ) -> Result<(), Self::Error> {
-        Ok(())
+    ) -> Result<recondo_domain::model::ApplyUploadTagsOutcome, Self::Error> {
+        Ok(recondo_domain::model::ApplyUploadTagsOutcome::Applied)
     }
 
     fn save_media_record(&self, _media: &Media) -> Result<(), Self::Error> {
@@ -96,6 +96,24 @@ impl MediaRepository for TestRepo {
         id: &MediaId,
     ) -> Result<Option<Vec<(String, String)>>, Self::Error> {
         Ok(self.media_edges.get(id.as_str()).cloned())
+    }
+    fn recycle_media(&self, _id: &MediaId) -> Result<Option<RecycledMedia>, Self::Error> {
+        Ok(None)
+    }
+    fn restore_recycled_media(&self, _id: &MediaId) -> Result<Option<RecycledMedia>, Self::Error> {
+        Ok(None)
+    }
+    fn get_recycled_media(&self, _id: &MediaId) -> Result<Option<RecycledMedia>, Self::Error> {
+        Ok(None)
+    }
+    fn list_recycled_media(&self) -> Result<Vec<RecycledMedia>, Self::Error> {
+        Ok(Vec::new())
+    }
+    fn delete_recycled_media(&self, _id: &MediaId, _assets_dir: &Path) -> Result<bool, DeleteMediaError<Self::Error>> {
+        Ok(false)
+    }
+    fn empty_recycle_bin(&self, _assets_dir: &Path) -> Result<usize, DeleteMediaError<Self::Error>> {
+        Ok(0)
     }
 }
 

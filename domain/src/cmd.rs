@@ -415,11 +415,11 @@ mod tests {
             &self,
             _media_id: &model::MediaId,
             _tags: &[(String, model::Tag)],
-        ) -> Result<(), Self::Error> {
+        ) -> Result<model::ApplyUploadTagsOutcome, Self::Error> {
             if self.error.is_some() {
                 Err(StubError)
             } else {
-                Ok(())
+                Ok(model::ApplyUploadTagsOutcome::Applied)
             }
         }
 
@@ -709,4 +709,33 @@ mod tests {
         let result = merge_relationship("author", "creator", &repo);
         assert!(matches!(result, Err(MergeRelationshipError::Repository(_))));
     }
+}
+
+pub fn recycle_media<R: crate::repository::MediaRepository>(
+    id: &crate::model::MediaId,
+    repo: &R,
+) -> Result<Option<crate::model::RecycledMedia>, R::Error> {
+    repo.recycle_media(id)
+}
+
+pub fn restore_media<R: crate::repository::MediaRepository>(
+    id: &crate::model::MediaId,
+    repo: &R,
+) -> Result<Option<crate::model::RecycledMedia>, R::Error> {
+    repo.restore_recycled_media(id)
+}
+
+pub fn permanently_delete_media<R: crate::repository::MediaRepository>(
+    id: &crate::model::MediaId,
+    assets_dir: &std::path::Path,
+    repo: &R,
+) -> Result<bool, crate::repository::DeleteMediaError<R::Error>> {
+    repo.delete_recycled_media(id, assets_dir)
+}
+
+pub fn empty_recycle_bin<R: crate::repository::MediaRepository>(
+    assets_dir: &std::path::Path,
+    repo: &R,
+) -> Result<usize, crate::repository::DeleteMediaError<R::Error>> {
+    repo.empty_recycle_bin(assets_dir)
 }

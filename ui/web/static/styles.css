@@ -532,6 +532,42 @@ h1 em, h2 em { color: var(--accent); font-family: var(--serif); font-weight: 500
 .meta-hash { font-family: var(--mono); color: var(--accent); font-size: 10px; }
 .meta-value { color: var(--muted); }
 .processed-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.details-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.details-recycle-form { margin: 0; }
+.recycle-bin-header-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.recycle-bin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+  margin-top: 24px;
+}
+.recycle-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.recycle-tag-list { margin-top: 4px; }
+.recycle-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.recycle-danger-button {
+  border-color: rgba(251, 73, 52, 0.45);
+  color: #fb4934;
+}
 
 @media (max-width: 800px) {
   .hero { min-height: auto; grid-template-columns: 1fr; padding-block: 70px 80px; }
