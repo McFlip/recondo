@@ -1,6 +1,6 @@
 use crate::{
     model,
-    repository::{MediaRepository, SaveMediaError, TagRepository},
+    repository::{CollectionRepository, MediaRepository, SaveMediaError, TagRepository},
 };
 use std::{
     error::Error as StdError,
@@ -323,6 +323,80 @@ pub fn merge_relationship<R: TagRepository>(
         .map_err(MergeRelationshipError::Repository)
 }
 
+#[derive(Debug)]
+pub enum SaveCollectionError<E> {
+    EmptyName,
+    Repository(E),
+}
+
+impl<E: fmt::Display> fmt::Display for SaveCollectionError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyName => write!(f, "collection name must not be empty"),
+            Self::Repository(e) => write!(f, "repository error: {e}"),
+        }
+    }
+}
+
+impl<E: StdError + 'static> StdError for SaveCollectionError<E> {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::EmptyName => None,
+            Self::Repository(e) => Some(e),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum DeleteCollectionError<E> {
+    EmptyName,
+    Repository(E),
+}
+
+impl<E: fmt::Display> fmt::Display for DeleteCollectionError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyName => write!(f, "collection name must not be empty"),
+            Self::Repository(e) => write!(f, "repository error: {e}"),
+        }
+    }
+}
+
+impl<E: StdError + 'static> StdError for DeleteCollectionError<E> {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::EmptyName => None,
+            Self::Repository(e) => Some(e),
+        }
+    }
+}
+
+pub fn save_collection<R: CollectionRepository>(
+    collection: &model::Collection,
+    repo: &R,
+) -> Result<(), SaveCollectionError<R::Error>> {
+    let name = model::normalize_collection_name(&collection.name);
+    if name.is_empty() {
+        return Err(SaveCollectionError::EmptyName);
+    }
+    let mut collection = collection.clone();
+    collection.name = name;
+    repo.save_collection(&collection)
+        .map_err(SaveCollectionError::Repository)
+}
+
+pub fn delete_collection<R: CollectionRepository>(
+    name: &str,
+    repo: &R,
+) -> Result<bool, DeleteCollectionError<R::Error>> {
+    let name = model::normalize_collection_name(name);
+    if name.is_empty() {
+        return Err(DeleteCollectionError::EmptyName);
+    }
+    repo.delete_collection(&name)
+        .map_err(DeleteCollectionError::Repository)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,6 +609,62 @@ mod tests {
                 Err(StubError)
             } else {
                 Ok(())
+            }
+        }
+    }
+
+    impl CollectionRepository for StubRepo {
+        type Error = StubError;
+
+        fn init(&self) -> Result<(), Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn save_collection(&self, _collection: &model::Collection) -> Result<(), Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn get_collection(&self, _name: &str) -> Result<Option<model::Collection>, Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn list_collections(&self) -> Result<Vec<model::Collection>, Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
+            } else {
+                Ok(Vec::new())
+            }
+        }
+
+        fn get_collections_by_prefix(
+            &self,
+            _prefix: &str,
+            _limit: Option<usize>,
+        ) -> Result<Option<Vec<model::Collection>>, Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn delete_collection(&self, _name: &str) -> Result<bool, Self::Error> {
+            if self.error.is_some() {
+                Err(StubError)
+            } else {
+                Ok(false)
             }
         }
     }

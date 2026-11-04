@@ -10,6 +10,7 @@ pub fn site_header() -> Markup {
             nav aria-label="Main navigation" {
                 a class="nav-cta" href="/explore" { "Explore" }
                 a class="nav-cta" href="/upload" { "Upload media" }
+                a class="nav-cta" href="/collections" { "Collections" }
                 a class="nav-cta" href="/recycle-bin" { "Recycle bin" }
             }
         }

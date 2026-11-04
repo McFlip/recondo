@@ -1,5 +1,5 @@
-use crate::model::{Media, MediaId, Tag, TagId, normalize_relationship};
-use crate::repository::{MediaRepository, TagRepository};
+use crate::model::{Collection, Media, MediaId, Tag, TagId, normalize_collection_name, normalize_relationship};
+use crate::repository::{CollectionRepository, MediaRepository, TagRepository};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -443,6 +443,27 @@ where
     build_media_query_result(media_ids, search_tag_ids, limit, repo)
 }
 
+pub fn get_collections_by_prefix<R: CollectionRepository>(
+    prefix: &str,
+    limit: Option<usize>,
+    repo: &R,
+) -> Result<Option<Vec<Collection>>, R::Error> {
+    if limit == Some(0) {
+        return Ok(None);
+    }
+    let normalized = normalize_collection_name(prefix);
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+    repo.get_collections_by_prefix(&normalized, limit)
+}
+
+pub fn list_collections<R: CollectionRepository>(
+    repo: &R,
+) -> Result<Vec<Collection>, R::Error> {
+    repo.list_collections()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -707,6 +728,62 @@ mod tests {
         }
     }
 
+    impl CollectionRepository for MockMediaRepo {
+        type Error = MockError;
+
+        fn init(&self) -> Result<(), Self::Error> {
+            if self.should_fail || self.tag_should_fail {
+                Err(MockError)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn save_collection(&self, _collection: &Collection) -> Result<(), Self::Error> {
+            if self.should_fail || self.tag_should_fail {
+                Err(MockError)
+            } else {
+                Ok(())
+            }
+        }
+
+        fn get_collection(&self, _name: &str) -> Result<Option<Collection>, Self::Error> {
+            if self.should_fail || self.tag_should_fail {
+                Err(MockError)
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn list_collections(&self) -> Result<Vec<Collection>, Self::Error> {
+            if self.should_fail || self.tag_should_fail {
+                Err(MockError)
+            } else {
+                Ok(Vec::new())
+            }
+        }
+
+        fn get_collections_by_prefix(
+            &self,
+            _prefix: &str,
+            _limit: Option<usize>,
+        ) -> Result<Option<Vec<Collection>>, Self::Error> {
+            if self.should_fail || self.tag_should_fail {
+                Err(MockError)
+            } else {
+                Ok(None)
+            }
+        }
+
+        fn delete_collection(&self, _name: &str) -> Result<bool, Self::Error> {
+            if self.should_fail || self.tag_should_fail {
+                Err(MockError)
+            } else {
+                Ok(false)
+            }
+        }
+    }
+
     struct MockTagRepo {
         tags: HashMap<String, Vec<(String, String)>>,
         relationships: Vec<String>,
@@ -841,6 +918,38 @@ mod tests {
                 return Err(MockError);
             }
             Ok(())
+        }
+    }
+
+    impl CollectionRepository for MockTagRepo {
+        type Error = MockError;
+
+        fn init(&self) -> Result<(), Self::Error> {
+            if self.should_fail { Err(MockError) } else { Ok(()) }
+        }
+
+        fn save_collection(&self, _collection: &Collection) -> Result<(), Self::Error> {
+            if self.should_fail { Err(MockError) } else { Ok(()) }
+        }
+
+        fn get_collection(&self, _name: &str) -> Result<Option<Collection>, Self::Error> {
+            if self.should_fail { Err(MockError) } else { Ok(None) }
+        }
+
+        fn list_collections(&self) -> Result<Vec<Collection>, Self::Error> {
+            if self.should_fail { Err(MockError) } else { Ok(Vec::new()) }
+        }
+
+        fn get_collections_by_prefix(
+            &self,
+            _prefix: &str,
+            _limit: Option<usize>,
+        ) -> Result<Option<Vec<Collection>>, Self::Error> {
+            if self.should_fail { Err(MockError) } else { Ok(None) }
+        }
+
+        fn delete_collection(&self, _name: &str) -> Result<bool, Self::Error> {
+            if self.should_fail { Err(MockError) } else { Ok(false) }
         }
     }
 

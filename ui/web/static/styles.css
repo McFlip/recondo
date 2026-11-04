@@ -627,6 +627,89 @@ h1 em, h2 em { color: var(--accent); font-family: var(--serif); font-weight: 500
   .footer-note { order: 2; }
 }
 
+.save-collection-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #3a3f34;
+  background: #171a15;
+  color: var(--faint);
+  padding: 8px 12px;
+  font: inherit;
+  cursor: pointer;
+  transition: border-color .15s ease, color .15s ease;
+}
+.save-collection-toggle:hover {
+  border-color: #9e6d59;
+  color: #e6a18a;
+}
+.save-collection-toggle i {
+  font-size: 15px;
+}
+.save-collection-label {
+  font-size: 13px;
+  letter-spacing: .04em;
+}
+.save-collection-form {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+  max-width: 360px;
+}
+.save-collection-form label {
+  font-size: 12px;
+  letter-spacing: .08em;
+  color: var(--faint);
+}
+
+.collections-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.collection-card {
+  border: 1px solid #3a3f34;
+  background: #171a15;
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.collection-card-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.collection-card-heading h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.collection-view-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.collection-view-button i {
+  font-size: 14px;
+}
+
+.collection-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.collection-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
 }

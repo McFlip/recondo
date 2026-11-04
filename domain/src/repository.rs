@@ -38,6 +38,22 @@ pub trait MediaRepository {
     fn empty_recycle_bin(&self, _assets_dir: &Path) -> Result<usize, DeleteMediaError<Self::Error>> { Ok(0) }
 }
 
+use crate::model::Collection;
+
+pub trait CollectionRepository {
+    type Error;
+    fn init(&self) -> Result<(), Self::Error>;
+    fn save_collection(&self, collection: &Collection) -> Result<(), Self::Error>;
+    fn get_collection(&self, name: &str) -> Result<Option<Collection>, Self::Error>;
+    fn list_collections(&self) -> Result<Vec<Collection>, Self::Error>;
+    fn get_collections_by_prefix(
+        &self,
+        prefix: &str,
+        limit: Option<usize>,
+    ) -> Result<Option<Vec<Collection>>, Self::Error>;
+    fn delete_collection(&self, name: &str) -> Result<bool, Self::Error>;
+}
+
 pub trait TagRepository {
     type Error;
     fn init(&self) -> Result<(), Self::Error>;

@@ -1,3 +1,4 @@
+pub mod collections;
 pub mod explore;
 pub mod landing;
 pub mod media;

@@ -26,6 +26,7 @@ pub fn init_db(db: &Database) -> Result<(), Error> {
     let _ = write_txn.open_table(TAG)?;
     let _ = write_txn.open_table(tag::RELATIONSHIP_TO_TAGS)?;
     let _ = write_txn.open_table(RECYCLE_BIN)?;
+    let _ = write_txn.open_table(crate::collection::COLLECTIONS)?;
     write_txn.commit()?;
     Ok(())
 }

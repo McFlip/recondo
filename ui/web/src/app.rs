@@ -19,19 +19,21 @@ use datastar::{
 use recondo_dal::media::RedbMediaRepository;
 use recondo_domain::cmd::{
     CreateMediaOutcome, add_tag_to_media, create_media_from_file_in_with_tags_and_title,
-    empty_recycle_bin, merge_relationship, permanently_delete_media, recycle_media,
-    remove_tag_from_media, restore_media,
+    delete_collection, empty_recycle_bin, merge_relationship, permanently_delete_media,
+    recycle_media, remove_tag_from_media, restore_media, save_collection,
 };
-use recondo_domain::model::{MediaId, Tag, normalize_relationship};
+use recondo_domain::model::{Collection, MediaId, Tag, normalize_collection_name, normalize_relationship};
 use recondo_domain::repository::{MediaRepository, TagRepository};
 use recondo_domain::{
-    get_enriched_media_by_logical_and, get_enriched_media_by_logical_and_then_or,
-    get_enriched_media_by_logical_or, get_enriched_media_by_logical_or_then_and,
-    get_recycled_media, get_relationships_by_prefix, get_tag_adj_list, get_tags_by_relationship,
+    get_collections_by_prefix, get_enriched_media_by_logical_and,
+    get_enriched_media_by_logical_and_then_or, get_enriched_media_by_logical_or,
+    get_enriched_media_by_logical_or_then_and, get_recycled_media, get_relationships_by_prefix,
+    get_tag_adj_list, get_tags_by_relationship, list_collections,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio_stream::iter;
 
+use crate::pages::collections;
 use crate::pages::explore;
 use crate::pages::landing;
 use crate::pages::media;
@@ -84,6 +86,10 @@ pub fn router(state: AppState) -> Router {
         .route("/recycle-bin/restore", post(restore_recycled_handler))
         .route("/recycle-bin/delete", post(delete_recycled_handler))
         .route("/recycle-bin/empty", post(empty_recycled_handler))
+        .route("/collections", get(collections_page))
+        .route("/collections", post(save_collection_handler))
+        .route("/collections/delete", post(delete_collection_handler))
+        .route("/collections/search", get(search_collections))
         .route(
             "/upload/relationship-search",
             get(search_upload_relationships),
@@ -247,6 +253,198 @@ async fn empty_recycled_handler(State(state): State<AppState>, body: Bytes) -> R
             recycle_bin_redirect(None, Some("Could not empty recycle bin."))
         }
     }
+}
+
+async fn collections_page(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let prefix = params
+        .get("prefix")
+        .or_else(|| params.get("query"))
+        .cloned()
+        .unwrap_or_default();
+    let repo = state.repo.clone();
+    let query_prefix = prefix.clone();
+    let result = if normalize_collection_name(&prefix).is_empty() {
+        tokio::task::spawn_blocking(move || list_collections(repo.as_ref())).await
+    } else {
+        tokio::task::spawn_blocking(move || {
+            get_collections_by_prefix(&query_prefix, None, repo.as_ref())
+                .map(|collections| collections.unwrap_or_default())
+        })
+        .await
+    };
+
+    let collections = match result {
+        Ok(Ok(collections)) => collections,
+        Ok(Err(error)) => {
+            eprintln!("Could not load collections: {error}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+        Err(error) => {
+            eprintln!("Collections task failed: {error}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    // Resolve tag names for each collection.
+    let mut resolved: Vec<(Collection, Vec<String>)> = Vec::with_capacity(collections.len());
+    for collection in collections {
+        let tag_names = selected_tag_labels(&collection.tag_ids, state.repo.as_ref())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tag| tag.name().to_string())
+            .collect();
+        resolved.push((collection, tag_names));
+    }
+
+    collections::render_list(
+        &resolved,
+        &prefix,
+        params.get("notice").map(String::as_str),
+        params.get("error").map(String::as_str),
+    )
+    .into_response()
+}
+
+async fn search_collections(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let prefix = params
+        .get("prefix")
+        .or_else(|| params.get("query"))
+        .cloned()
+        .unwrap_or_default();
+    let repo = state.repo.clone();
+    let query_prefix = prefix.clone();
+    let result = if normalize_collection_name(&prefix).is_empty() {
+        tokio::task::spawn_blocking(move || list_collections(repo.as_ref())).await
+    } else {
+        tokio::task::spawn_blocking(move || {
+            get_collections_by_prefix(&query_prefix, None, repo.as_ref())
+                .map(|collections| collections.unwrap_or_default())
+        })
+        .await
+    };
+
+    let collections = match result {
+        Ok(Ok(collections)) => collections,
+        Ok(Err(error)) => {
+            eprintln!("Could not search collections: {error}");
+            return patch_response(
+                "#collections-results",
+                collections::results(&[], &prefix),
+            );
+        }
+        Err(error) => {
+            eprintln!("Collections search task failed: {error}");
+            return patch_response(
+                "#collections-results",
+                collections::results(&[], &prefix),
+            );
+        }
+    };
+
+    let mut resolved: Vec<(Collection, Vec<String>)> = Vec::with_capacity(collections.len());
+    for collection in collections {
+        let tag_names = selected_tag_labels(&collection.tag_ids, state.repo.as_ref())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tag| tag.name().to_string())
+            .collect();
+        resolved.push((collection, tag_names));
+    }
+
+    patch_response("#collections-results", collections::results(&resolved, &prefix))
+}
+
+async fn save_collection_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    let body_str = String::from_utf8_lossy(&body);
+    let name = form_field(&body, "name").unwrap_or_default();
+    if normalize_collection_name(&name).is_empty() {
+        return collections_redirect(None, Some("A collection name is required."));
+    }
+
+    let media_params = parse_media_query(&body_str);
+    let operation = match media_params.operation {
+        media::Operation::And => "and",
+        media::Operation::Or => "or",
+        media::Operation::AndThenOr => "and_then_or",
+        media::Operation::OrThenAnd => "or_then_and",
+    };
+    let collection = Collection {
+        name: name.clone(),
+        operation: operation.to_string(),
+        tag_ids: media_params.tag_ids.clone(),
+        groups: media_params.groups.clone(),
+        limit: media_params.limit,
+    };
+
+    let repo = state.repo;
+    match tokio::task::spawn_blocking(move || {
+        save_collection(&collection, repo.as_ref()).map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(())) => collections_redirect(Some("Collection saved."), None),
+        Ok(Err(error)) => {
+            eprintln!("Could not save collection {name:?}: {error}");
+            collections_redirect(None, Some(&error))
+        }
+        Err(error) => {
+            eprintln!("Save collection task failed for {name:?}: {error}");
+            collections_redirect(None, Some("The collection could not be saved."))
+        }
+    }
+}
+
+async fn delete_collection_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    let name = form_field(&body, "name").unwrap_or_default();
+    let repo = state.repo;
+    let cmd_name = name.clone();
+    match tokio::task::spawn_blocking(move || {
+        delete_collection(&cmd_name, repo.as_ref()).map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(true)) => collections_redirect(Some("Collection deleted."), None),
+        Ok(Ok(false)) => collections_redirect(None, Some("Collection not found.")),
+        Ok(Err(error)) => {
+            eprintln!("Could not delete collection {name:?}: {error}");
+            collections_redirect(None, Some(&error))
+        }
+        Err(error) => {
+            eprintln!("Delete collection task failed for {name:?}: {error}");
+            collections_redirect(None, Some("The collection could not be deleted."))
+        }
+    }
+}
+
+fn collections_redirect(notice: Option<&str>, error: Option<&str>) -> Response {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    if let Some(notice) = notice {
+        serializer.append_pair("notice", notice);
+    }
+    if let Some(error) = error {
+        serializer.append_pair("error", error);
+    }
+    let query = serializer.finish();
+    if query.is_empty() {
+        Redirect::to("/collections").into_response()
+    } else {
+        Redirect::to(&format!("/collections?{query}")).into_response()
+    }
+}
+
+fn form_field(body: &[u8], key: &str) -> Option<String> {
+    for (k, v) in url::form_urlencoded::parse(body) {
+        if k == key {
+            return Some(v.into_owned());
+        }
+    }
+    None
 }
 
 async fn upload_script() -> impl IntoResponse {
@@ -3093,6 +3291,94 @@ mod tests {
             sse_text.contains("FAILED"),
             "truncated upload must surface an error card, got:\n{sse_text}"
         );
+    }
+
+
+    #[tokio::test]
+    async fn collections_page_renders() {
+        let (state, _tmp) = test_app_state();
+        let response = router(state)
+            .oneshot(Request::builder().uri("/collections").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("collections."));
+        assert!(html.contains("List all"));
+    }
+
+    #[tokio::test]
+    async fn save_collection_handler_redirects_and_lists() {
+        let (state, _tmp) = test_app_state();
+        let save = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/collections")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from("name=My+Collection&tag=abc&limit=10"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(save.status(), StatusCode::SEE_OTHER);
+
+        let list = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/collections?prefix=my")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(list.status(), StatusCode::OK);
+        let body = to_bytes(list.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("my collection"));
+    }
+
+    #[tokio::test]
+    async fn delete_collection_handler_redirects() {
+        let (state, _tmp) = test_app_state();
+        let _ = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/collections")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from("name=My+Collection&tag=abc&limit=10"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let delete = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/collections/delete")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from("name=My+Collection"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::SEE_OTHER);
+
+        let list = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/collections")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = to_bytes(list.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!html.contains("my collection"));
     }
 
     use axum::body::Body;

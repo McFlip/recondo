@@ -199,6 +199,36 @@ pub fn render(
                                 }
                             }
 
+                            div
+                                class="save-collection"
+                                data-signals="{ saveOpen: false }" {
+                                button
+                                    type="button"
+                                    class="save-collection-toggle"
+                                    aria-label="Save to collection"
+                                    title="Save to collection"
+                                    data-on:click="$saveOpen = !$saveOpen" {
+                                    i class="fa-solid fa-bookmark" aria-hidden="true" {}
+                                    span class="save-collection-label" { "Save to collection" }
+                                }
+                                form
+                                    id="save-collection-form"
+                                    class="save-collection-form"
+                                    method="post"
+                                    action="/collections"
+                                    data-show="$saveOpen" {
+                                    (hidden_search_state(&tag_ids, groups, add_to_groups, operation))
+                                    input type="hidden" name="limit" value=(limit_value(limit));
+                                    label for="collection-name" { "Collection name" }
+                                    input
+                                        id="collection-name"
+                                        name="name"
+                                        type="text"
+                                        required;
+                                    button type="submit" class="operation-button" { "Save" }
+                                }
+                            }
+
                             section class="selected-tags-section" aria-label="Selected tags" {
                                 p class="media-control-label" { "SELECTED TAGS" }
                                 @if operation.is_grouped() {

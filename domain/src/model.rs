@@ -5,6 +5,19 @@ use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 use url::Url;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Collection {
+    pub name: String,
+    pub operation: String,
+    pub tag_ids: Vec<String>,
+    pub groups: Vec<Vec<String>>,
+    pub limit: usize,
+}
+
+pub fn normalize_collection_name(s: impl AsRef<str>) -> String {
+    s.as_ref().trim().to_lowercase().nfc().collect()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MediaId(String);
 

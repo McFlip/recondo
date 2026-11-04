@@ -1,7 +1,7 @@
 # To Do
 
 - [ ] Manage a Collection
-  - [ ] Save a collection
+  - [x] Save a collection
   - [ ] Add tags to collection
   - [ ] Add media to collection
 - [x] Manage an Item

@@ -12,6 +12,7 @@ pub fn render(title: &str, content: Markup) -> Markup {
                 meta name="theme-color" content="#11130f";
                 title { (title) " · Recondo" }
                 link rel="stylesheet" href="/styles.css";
+                link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css" {}
                 script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.4/bundles/datastar.js" {}
             }
             body {
