@@ -1,9 +1,9 @@
 # To Do
 
-- [ ] Manage a Collection
+- [x] Manage a Collection
   - [x] Save a collection
   - [x] Add tags to collection
-  - [ ] Add media to collection
+  - [x] Add media to collection
 - [x] Manage an Item
   - [x] Delete
   - [x] Recycle Bin?
