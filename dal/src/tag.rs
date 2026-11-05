@@ -2,6 +2,10 @@ use crate::media::{MEDIA_ADJ_LST, RedbMediaRepository};
 use recondo_domain::model::{Tag, normalize_relationship};
 use recondo_domain::repository::TagRepository;
 use redb::{Database, Error, ReadableDatabase, ReadableTable, TableDefinition};
+use std::cell::Cell;
+thread_local! {
+    static PROPAGATING: Cell<bool> = const { Cell::new(false) };
+}
 
 // Relationship, Media ID
 type EdgeFrmTag = (String, String);
@@ -11,6 +15,8 @@ pub(super) const TAG_ADJ_LST: TableDefinition<&str, Vec<EdgeFrmTag>> =
 pub(super) const TAG: TableDefinition<&str, &str> = TableDefinition::new("TAG");
 pub(super) const RELATIONSHIP_TO_TAGS: TableDefinition<&str, Vec<String>> =
     TableDefinition::new("RELATIONSHIP_TO_TAGS");
+pub(super) const TAG_ALIASES: TableDefinition<&str, Vec<String>> =
+    TableDefinition::new("TAG_ALIASES");
 
 #[derive(Debug)]
 pub enum AddTagEdgeError {
@@ -49,6 +55,12 @@ pub fn get_tag_adj_list(db: &Database, tag_id: &str) -> Result<Option<Vec<EdgeFr
         return Ok(None);
     };
     Ok(Some(value.value()))
+}
+
+pub fn get_tag_name(db: &Database, tag_id: &str) -> Result<Option<String>, Error> {
+    let read_txn = db.begin_read()?;
+    let table = read_txn.open_table(TAG)?;
+    Ok(table.get(tag_id)?.map(|v| v.value().to_string()))
 }
 
 pub fn get_relationships_by_prefix(
@@ -253,6 +265,19 @@ impl TagRepository for RedbMediaRepository {
                 .map_err(AddTagEdgeError::repository)?;
         }
         write_txn.commit().map_err(AddTagEdgeError::repository)?;
+
+        // Propagate to aliased tags unless already propagating.
+        let propagating = PROPAGATING.with(|flag| flag.get());
+        if !propagating {
+            PROPAGATING.with(|flag| flag.set(true));
+            let aliases = self.get_tag_aliases(tag.id()).ok().flatten().unwrap_or_default();
+            for alias_id in aliases {
+                let alias_name = crate::tag::get_tag_name(self.database(), &alias_id).ok().flatten().unwrap_or_else(|| alias_id.clone());
+                let alias_tag = Tag::from_parts(alias_id, alias_name);
+                let _ = self.add_tag_edge(media_id, &alias_tag, &relationship);
+            }
+            PROPAGATING.with(|flag| flag.set(false));
+        }
         Ok(())
     }
 
@@ -336,6 +361,16 @@ impl TagRepository for RedbMediaRepository {
             }
         }
         write_txn.commit().map_err(AddTagEdgeError::repository)?;
+
+        let propagating = PROPAGATING.with(|flag| flag.get());
+        if !propagating {
+            PROPAGATING.with(|flag| flag.set(true));
+            let aliases = self.get_tag_aliases(tag_id).ok().flatten().unwrap_or_default();
+            for alias_id in aliases {
+                let _ = self.remove_tag_edge(media_id, &alias_id, &relationship);
+            }
+            PROPAGATING.with(|flag| flag.set(false));
+        }
         Ok(())
     }
 
@@ -459,6 +494,186 @@ impl TagRepository for RedbMediaRepository {
                             .insert(media_id.as_str(), updated_edges)
                             .map_err(AddTagEdgeError::repository)?;
                     }
+                }
+            }
+        }
+        write_txn.commit().map_err(AddTagEdgeError::repository)?;
+        Ok(())
+    }
+
+    fn upsert_tag(&self, tag: &Tag) -> Result<(), Self::Error> {
+        let write_txn = self.database().begin_write().map_err(AddTagEdgeError::repository)?;
+        {
+            let mut tag_table = write_txn.open_table(TAG).map_err(AddTagEdgeError::repository)?;
+            tag_table.insert(tag.id(), tag.name()).map_err(AddTagEdgeError::repository)?;
+        }
+        write_txn.commit().map_err(AddTagEdgeError::repository)?;
+        Ok(())
+    }
+
+    fn search_tags(&self, prefix: &str, limit: Option<usize>) -> Result<Option<Vec<Tag>>, Self::Error> {
+        let normalized = prefix.trim().to_lowercase();
+        let read_txn = self.database().begin_read().map_err(AddTagEdgeError::repository)?;
+        let table = read_txn.open_table(TAG).map_err(AddTagEdgeError::repository)?;
+        let mut results = Vec::new();
+        for entry in table.iter().map_err(AddTagEdgeError::repository)? {
+            let (key, value) = entry.map_err(AddTagEdgeError::repository)?;
+            let id = key.value().to_string();
+            let name = value.value().to_string();
+            if normalized.is_empty() || name.starts_with(&normalized) {
+                results.push(Tag::from_parts(id, name));
+                if let Some(limit) = limit
+                    && results.len() >= limit {
+                    break;
+                }
+            }
+        }
+        if results.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(results))
+        }
+    }
+
+    fn get_tag_aliases(&self, tag_id: &str) -> Result<Option<Vec<String>>, Self::Error> {
+        let read_txn = self.database().begin_read().map_err(AddTagEdgeError::repository)?;
+        let table = read_txn.open_table(TAG_ALIASES).map_err(AddTagEdgeError::repository)?;
+        let Some(value) = table.get(tag_id).map_err(AddTagEdgeError::repository)? else {
+            return Ok(None);
+        };
+        let group = value.value();
+        let aliases: Vec<String> = group.into_iter().filter(|id| id != tag_id).collect();
+        if aliases.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(aliases))
+        }
+    }
+
+    fn alias_tags(&self, tag_a: &str, tag_b: &str) -> Result<(), Self::Error> {
+        if tag_a.is_empty() || tag_b.is_empty() {
+            return Err(AddTagEdgeError::repository(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "tag ids must not be empty",
+            )));
+        }
+        if tag_a == tag_b {
+            return Ok(());
+        }
+
+        let write_txn = self.database().begin_write().map_err(AddTagEdgeError::repository)?;
+        {
+            let mut alias_table = write_txn.open_table(TAG_ALIASES).map_err(AddTagEdgeError::repository)?;
+
+            let group_a = alias_table
+                .get(tag_a)
+                .map_err(AddTagEdgeError::repository)?
+                .map(|v| v.value())
+                .unwrap_or_else(|| vec![tag_a.to_string()]);
+            let group_b = alias_table
+                .get(tag_b)
+                .map_err(AddTagEdgeError::repository)?
+                .map(|v| v.value())
+                .unwrap_or_else(|| vec![tag_b.to_string()]);
+
+            let mut members = group_a;
+            for id in group_b {
+                if !members.contains(&id) {
+                    members.push(id);
+                }
+            }
+            if !members.contains(&tag_a.to_string()) {
+                members.push(tag_a.to_string());
+            }
+            if !members.contains(&tag_b.to_string()) {
+                members.push(tag_b.to_string());
+            }
+
+            // Collect all edges across the merged group.
+            let mut tag_table = write_txn.open_table(TAG_ADJ_LST).map_err(AddTagEdgeError::repository)?;
+            let mut all_edges: Vec<(String, String)> = Vec::new();
+            for member in &members {
+                let edges = tag_table
+                    .get(member.as_str())
+                    .map_err(AddTagEdgeError::repository)?
+                    .map(|v| v.value())
+                    .unwrap_or_default();
+                for edge in edges {
+                    if !all_edges.contains(&edge) {
+                        all_edges.push(edge);
+                    }
+                }
+            }
+
+            // Mirror every edge to every member.
+            let mut media_table = write_txn.open_table(MEDIA_ADJ_LST).map_err(AddTagEdgeError::repository)?;
+            let mut rel_table = write_txn.open_table(RELATIONSHIP_TO_TAGS).map_err(AddTagEdgeError::repository)?;
+            for (rel, media_id) in &all_edges {
+                for member in &members {
+                    // tag adj already all_edges, but ensure table entries.
+                    // media adj
+                    let existing_edges = media_table
+                        .get(media_id.as_str())
+                        .map_err(AddTagEdgeError::repository)?
+                        .map(|v| v.value());
+                    if let Some(mut edges) = existing_edges {
+                        let candidate = (rel.clone(), member.clone());
+                        if !edges.contains(&candidate) {
+                            edges.push(candidate);
+                            media_table.insert(media_id.as_str(), edges).map_err(AddTagEdgeError::repository)?;
+                        }
+                    }
+                    // relationship -> tags
+                    let existing_rel = rel_table
+                        .get(rel.as_str())
+                        .map_err(AddTagEdgeError::repository)?
+                        .map(|v| v.value())
+                        .unwrap_or_default();
+                    if !existing_rel.contains(member) {
+                        let mut tags = existing_rel;
+                        tags.push(member.clone());
+                        rel_table.insert(rel.as_str(), tags).map_err(AddTagEdgeError::repository)?;
+                    }
+                }
+            }
+
+            // Write tag adj and alias table for all members.
+            for member in &members {
+                tag_table.insert(member.as_str(), all_edges.clone()).map_err(AddTagEdgeError::repository)?;
+                alias_table.insert(member.as_str(), members.clone()).map_err(AddTagEdgeError::repository)?;
+            }
+        }
+        write_txn.commit().map_err(AddTagEdgeError::repository)?;
+        Ok(())
+    }
+
+    fn unalias_tags(&self, tag_a: &str, tag_b: &str) -> Result<(), Self::Error> {
+        if tag_a.is_empty() || tag_b.is_empty() {
+            return Err(AddTagEdgeError::repository(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "tag ids must not be empty",
+            )));
+        }
+        if tag_a == tag_b {
+            return Ok(());
+        }
+        let write_txn = self.database().begin_write().map_err(AddTagEdgeError::repository)?;
+        {
+            let mut alias_table = write_txn.open_table(TAG_ALIASES).map_err(AddTagEdgeError::repository)?;
+            for (self_id, other_id) in [(tag_a, tag_b), (tag_b, tag_a)] {
+                let group = alias_table
+                    .get(self_id)
+                    .map_err(AddTagEdgeError::repository)?
+                    .map(|v| v.value())
+                    .unwrap_or_default();
+                if group.is_empty() {
+                    continue;
+                }
+                let updated: Vec<String> = group.into_iter().filter(|id| id != other_id).collect();
+                if updated.len() <= 1 {
+                    alias_table.remove(self_id).map_err(AddTagEdgeError::repository)?;
+                } else {
+                    alias_table.insert(self_id, updated).map_err(AddTagEdgeError::repository)?;
                 }
             }
         }

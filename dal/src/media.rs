@@ -25,6 +25,7 @@ pub fn init_db(db: &Database) -> Result<(), Error> {
     let _ = write_txn.open_table(TAG_ADJ_LST)?;
     let _ = write_txn.open_table(TAG)?;
     let _ = write_txn.open_table(tag::RELATIONSHIP_TO_TAGS)?;
+    let _ = write_txn.open_table(tag::TAG_ALIASES)?;
     let _ = write_txn.open_table(RECYCLE_BIN)?;
     let _ = write_txn.open_table(crate::collection::COLLECTIONS)?;
     write_txn.commit()?;
@@ -1244,4 +1245,52 @@ mod tests {
 
         let _ = fs::remove_dir_all(&base);
     }
+
+
+
+
+    #[test]
+    fn test_alias_tags_copies_and_propagates() {
+        let base = temp_base("alias_tags");
+        let src = base.join("src.txt");
+        let dest = base.join("assets").join("media1.txt");
+        fs::write(&src, b"hello").unwrap();
+
+        let db_path = base.join("test.redb");
+        let _ = fs::remove_file(&db_path);
+        let db = Database::create(&db_path).unwrap();
+        init_db(&db).unwrap();
+        let repo = RedbMediaRepository::new(db);
+
+        let media = make_test_media("media1");
+        repo.save_media(&media, &src, &dest).unwrap();
+
+        let tag_a = Tag::new("alpha").unwrap();
+        let tag_b = Tag::new("beta").unwrap();
+
+        repo.add_tag_edge("media1", &tag_a, "liked").unwrap();
+        repo.alias_tags(tag_a.id(), tag_b.id()).unwrap();
+
+        let read_txn = repo.database().begin_read().unwrap();
+        let tag_table = read_txn.open_table(TAG_ADJ_LST).unwrap();
+        let beta_edges = tag_table.get(tag_b.id()).unwrap().unwrap().value();
+        assert!(beta_edges.contains(&("liked".to_string(), "media1".to_string())));
+
+        // future tagging propagates
+        repo.add_tag_edge("media1", &tag_a, "starred").unwrap();
+        let read_txn = repo.database().begin_read().unwrap();
+        let tag_table = read_txn.open_table(TAG_ADJ_LST).unwrap();
+        let beta_edges = tag_table.get(tag_b.id()).unwrap().unwrap().value();
+        assert!(beta_edges.contains(&("starred".to_string(), "media1".to_string())));
+
+        // removal propagates
+        repo.remove_tag_edge("media1", tag_a.id(), "liked").unwrap();
+        let read_txn = repo.database().begin_read().unwrap();
+        let tag_table = read_txn.open_table(TAG_ADJ_LST).unwrap();
+        let beta_edges = tag_table.get(tag_b.id()).unwrap().unwrap().value();
+        assert!(!beta_edges.contains(&("liked".to_string(), "media1".to_string())));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
 }

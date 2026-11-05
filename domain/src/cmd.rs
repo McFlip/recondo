@@ -350,6 +350,68 @@ pub fn merge_relationship<R: TagRepository>(
 }
 
 #[derive(Debug)]
+pub enum AliasTagError<E> {
+    EmptyTagId,
+    SameTag,
+    Repository(E),
+}
+
+impl<E: fmt::Display> fmt::Display for AliasTagError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyTagId => write!(f, "tag id must not be empty"),
+            Self::SameTag => write!(f, "tags must differ"),
+            Self::Repository(e) => write!(f, "repository error: {e}"),
+        }
+    }
+}
+
+impl<E: StdError + 'static> StdError for AliasTagError<E> {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::EmptyTagId | Self::SameTag => None,
+            Self::Repository(e) => Some(e),
+        }
+    }
+}
+
+pub fn alias_tags<R: TagRepository>(
+    tag_a: &str,
+    tag_b: &str,
+    repo: &R,
+) -> Result<(), AliasTagError<R::Error>> {
+    if tag_a.trim().is_empty() || tag_b.trim().is_empty() {
+        return Err(AliasTagError::EmptyTagId);
+    }
+    let tag_a = model::Tag::new(tag_a).map_err(|_| AliasTagError::EmptyTagId)?;
+    let tag_b = model::Tag::new(tag_b).map_err(|_| AliasTagError::EmptyTagId)?;
+    if tag_a == tag_b {
+        return Err(AliasTagError::SameTag);
+    }
+    repo.upsert_tag(&tag_a).map_err(AliasTagError::Repository)?;
+    repo.upsert_tag(&tag_b).map_err(AliasTagError::Repository)?;
+    repo.alias_tags(tag_a.id(), tag_b.id())
+        .map_err(AliasTagError::Repository)
+}
+
+pub fn unalias_tags<R: TagRepository>(
+    tag_a: &str,
+    tag_b: &str,
+    repo: &R,
+) -> Result<(), AliasTagError<R::Error>> {
+    if tag_a.trim().is_empty() || tag_b.trim().is_empty() {
+        return Err(AliasTagError::EmptyTagId);
+    }
+    let tag_a = model::Tag::new(tag_a).map_err(|_| AliasTagError::EmptyTagId)?;
+    let tag_b = model::Tag::new(tag_b).map_err(|_| AliasTagError::EmptyTagId)?;
+    if tag_a == tag_b {
+        return Err(AliasTagError::SameTag);
+    }
+    repo.unalias_tags(tag_a.id(), tag_b.id())
+        .map_err(AliasTagError::Repository)
+}
+
+#[derive(Debug)]
 pub enum SaveCollectionError<E> {
     EmptyName,
     Repository(E),
@@ -864,6 +926,20 @@ mod tests {
         let repo = StubRepo::failing();
         let result = merge_relationship("author", "creator", &repo);
         assert!(matches!(result, Err(MergeRelationshipError::Repository(_))));
+    }
+
+    #[test]
+    fn test_alias_tags_empty() {
+        let repo = StubRepo::new(&[]);
+        let result = alias_tags("", "tag2", &repo);
+        assert!(matches!(result, Err(AliasTagError::EmptyTagId)));
+    }
+
+    #[test]
+    fn test_alias_tags_same() {
+        let repo = StubRepo::new(&[]);
+        let result = alias_tags("tag1", "tag1", &repo);
+        assert!(matches!(result, Err(AliasTagError::SameTag)));
     }
 }
 

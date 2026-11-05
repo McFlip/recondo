@@ -232,6 +232,46 @@ pub fn render_manage(
                             }
                         }
                     }
+
+                    section class="merge-relationship-section" aria-labelledby="alias-tags-heading" {
+                        div class="merge-relationship-heading" {
+                            p class="eyebrow" { "ALIAS" }
+                            h2 id="alias-tags-heading" { "Alias two " em { "tags." } }
+                            p class="section-description" {
+                                "Alias tags so their media references are mirrored."
+                            }
+                        }
+                        div class="merge-relationship-panel" {
+                            form method="post" action="/relationship/manage/alias" class="details-create-tag-pair" {
+                                input type="hidden" name="source" value=(relationship);
+                                label for="alias-tag-a" { "Tag A (in this relationship)" }
+                                select id="alias-tag-a" name="tag_a" required {
+                                    @for tag in tags {
+                                        option value=(tag.name()) { (tag.name()) }
+                                    }
+                                }
+                                label for="alias-tag-b-query" { "Tag B (search all tags)" }
+                                input
+                                    id="alias-tag-b-query"
+                                    type="search"
+                                    name="tag_b_query"
+                                    placeholder="Search a tag"
+                                    autocomplete="off"
+                                    aria-controls="alias-tag-b-suggestions"
+                                    data-bind:aliasquery=""
+                                    data-on:input="@get('/relationship/manage/tag-search?prefix='+encodeURIComponent($aliasquery))";
+                                div
+                                    id="alias-tag-b-suggestions"
+                                    class="relationship-suggestions"
+                                    role="status"
+                                    aria-live="polite" {
+                                    p class="explore-hint" { "Type to search for a tag." }
+                                }
+                                input type="hidden" name="tag_b" id="alias-tag-b" value="";
+                                button type="submit" class="operation-button" { "Alias tags" }
+                            }
+                        }
+                    }
                 }
             }
         },
@@ -293,6 +333,34 @@ pub fn merge_suggestions(source: &str, prefix: &str, relationships: &[String]) -
                         class="button button-secondary relationship-rename-button"
                         disabled {
                         "Rename"
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn tag_search_suggestions(tags: &[Tag]) -> Markup {
+    html! {
+        div
+            id="alias-tag-b-suggestions"
+            class="relationship-suggestions"
+            role="status"
+            aria-live="polite" {
+            @if tags.is_empty() {
+                p class="explore-hint" { "No tags match." }
+            } @else {
+                ul class="relationship-option-list" {
+                    @for tag in tags {
+                        li {
+                            button
+                                type="button"
+                                class="relationship-option"
+                                data-tag=(tag.name())
+                                data-on:click="document.getElementById('alias-tag-b').value = el.dataset.tag; document.getElementById('alias-tag-b-query').value = el.dataset.tag;" {
+                                span { (tag.name()) }
+                            }
+                        }
                     }
                 }
             }

@@ -83,6 +83,31 @@ pub trait TagRepository {
         source_relationship: &str,
         dest_relationship: &str,
     ) -> Result<(), Self::Error>;
+
+    fn get_tag_aliases(&self, tag_id: &str) -> Result<Option<Vec<String>>, Self::Error> {
+        let _ = tag_id;
+        Ok(None)
+    }
+
+    fn upsert_tag(&self, tag: &Tag) -> Result<(), Self::Error> {
+        let _ = tag;
+        Ok(())
+    }
+
+    fn search_tags(&self, prefix: &str, limit: Option<usize>) -> Result<Option<Vec<Tag>>, Self::Error> {
+        let _ = (prefix, limit);
+        Ok(None)
+    }
+
+    fn alias_tags(&self, tag_a: &str, tag_b: &str) -> Result<(), Self::Error> {
+        let _ = (tag_a, tag_b);
+        Ok(())
+    }
+
+    fn unalias_tags(&self, tag_a: &str, tag_b: &str) -> Result<(), Self::Error> {
+        let _ = (tag_a, tag_b);
+        Ok(())
+    }
 }
 
 #[derive(Debug)]

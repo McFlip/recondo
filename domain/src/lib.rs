@@ -16,6 +16,6 @@ pub use qry::{
     get_enriched_media_by_logical_or_then_and, get_media_adj_list, get_media_by_id,
     get_media_ids_by_logical_and, get_media_ids_by_logical_and_then_or, get_media_ids_by_logical_or,
     get_media_ids_by_logical_or_then_and, get_recycled_media, get_recycled_media_by_id,
-    get_relationships_by_prefix, get_tag_adj_list, get_tags_by_relationship, list_collections,
+    get_relationships_by_prefix, get_tag_adj_list, get_tag_aliases, get_tags_by_prefix, get_tags_by_relationship, list_collections,
 };
 pub use repository::{CollectionRepository, DeleteMediaError, SaveMediaError, TagRepository};

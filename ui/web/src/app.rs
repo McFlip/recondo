@@ -18,7 +18,7 @@ use datastar::{
 };
 use recondo_dal::media::RedbMediaRepository;
 use recondo_domain::cmd::{
-    CreateMediaOutcome, add_tag_to_media, create_media_from_file_in_with_tags_and_title,
+    CreateMediaOutcome, add_tag_to_media, alias_tags, create_media_from_file_in_with_tags_and_title,
     delete_collection, empty_recycle_bin, merge_relationship, permanently_delete_media,
     recycle_media, remove_tag_from_media, restore_media, save_collection,
 };
@@ -28,7 +28,7 @@ use recondo_domain::{
     get_collections_by_prefix, get_enriched_media_by_logical_and,
     get_enriched_media_by_logical_and_then_or, get_enriched_media_by_logical_or,
     get_enriched_media_by_logical_or_then_and, get_recycled_media, get_relationships_by_prefix,
-    get_tag_adj_list, get_tags_by_relationship, list_collections,
+    get_tag_adj_list, get_tags_by_prefix, get_tags_by_relationship, list_collections,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio_stream::iter;
@@ -59,6 +59,10 @@ pub fn router(state: AppState) -> Router {
             get(search_merge_relationships),
         )
         .route("/relationship/manage/merge", post(merge_relationship_handler))
+        .route("/relationship/manage/alias", post(manage_alias_tags_handler))
+        .route("/relationship/manage/tag-search", get(search_alias_tags))
+        .route("/tags/alias", get(alias_tags_page))
+        .route("/tags/alias", post(alias_tags_handler))
         .route("/media", get(media_page))
         .route("/media/details", get(media_details_page))
         .route("/media/details/tag", post(add_media_detail_tag))
@@ -2247,6 +2251,110 @@ async fn upload_handler(
     };
 
     Sse::new(response_stream)
+}
+
+async fn alias_tags_page(
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> maud::Markup {
+    let notice = params.get("notice").cloned();
+    let error = params.get("error").cloned();
+    crate::layout::render(
+        "Alias tags",
+        maud::html! {
+            section class="shell section-space" {
+                h1 { "Alias " em { "tags." } }
+                @if let Some(notice) = &notice {
+                    p class="details-tag-notice" role="status" { (notice) }
+                }
+                @if let Some(error) = &error {
+                    p class="details-tag-error" role="alert" { (error) }
+                }
+                form method="post" action="/tags/alias" class="details-create-tag-pair" {
+                    label for="alias-tag-a" { "Tag A" }
+                    input id="alias-tag-a" name="tag_a" type="text" required;
+                    label for="alias-tag-b" { "Tag B" }
+                    input id="alias-tag-b" name="tag_b" type="text" required;
+                    button type="submit" class="operation-button" { "Alias tags" }
+                }
+            }
+        },
+    )
+}
+
+async fn alias_tags_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    let tag_a_name = form_field(&body, "tag_a").unwrap_or_default();
+    let tag_b_name = form_field(&body, "tag_b").unwrap_or_default();
+    let repo = state.repo;
+    let a_name = tag_a_name.clone();
+    let b_name = tag_b_name.clone();
+    match tokio::task::spawn_blocking(move || {
+        alias_tags(&a_name, &b_name, repo.as_ref()).map_err(|e| e.to_string())
+    })
+    .await
+    {
+        Ok(Ok(())) => Redirect::to("/tags/alias?notice=Tags+aliased.").into_response(),
+        Ok(Err(error)) => {
+            let q = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("error", &error)
+                .finish();
+            Redirect::to(&format!("/tags/alias?{q}")).into_response()
+        }
+        Err(_) => Redirect::to("/tags/alias?error=Alias+failed").into_response(),
+    }
+}
+
+async fn manage_alias_tags_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    let source = form_field(&body, "source").unwrap_or_default();
+    let tag_a = form_field(&body, "tag_a").unwrap_or_default();
+    let tag_b = form_field(&body, "tag_b").unwrap_or_default();
+    if tag_a.trim().is_empty() || tag_b.trim().is_empty() {
+        return manage_relationship_redirect(
+            &normalize_relationship(&source),
+            None,
+            Some("Both tags are required."),
+        );
+    }
+    let repo = state.repo;
+    let cmd_a = tag_a.clone();
+    let cmd_b = tag_b.clone();
+    match tokio::task::spawn_blocking(move || {
+        alias_tags(&cmd_a, &cmd_b, repo.as_ref()).map_err(|e| e.to_string())
+    })
+    .await
+    {
+        Ok(Ok(())) => manage_relationship_redirect(
+            &normalize_relationship(&source),
+            Some(&format!("Aliased “{tag_a}” to “{tag_b}”.")),
+            None,
+        ),
+        Ok(Err(error)) => manage_relationship_redirect(
+            &normalize_relationship(&source),
+            None,
+            Some(&error),
+        ),
+        Err(_) => manage_relationship_redirect(
+            &normalize_relationship(&source),
+            None,
+            Some("Alias failed."),
+        ),
+    }
+}
+
+async fn search_alias_tags(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let prefix = params.get("prefix").cloned().unwrap_or_default();
+    let repo = state.repo;
+    let query_prefix = prefix.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        get_tags_by_prefix(&query_prefix, Some(12), repo.as_ref())
+            .map(|tags| tags.unwrap_or_default())
+    })
+    .await;
+    let tags = result.ok().and_then(|r| r.ok()).unwrap_or_default();
+    let markup = explore::tag_search_suggestions(&tags);
+    patch_response("#alias-tag-b-suggestions", markup)
 }
 
 async fn filter_demo(

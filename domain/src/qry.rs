@@ -109,6 +109,22 @@ pub fn get_tag_adj_list<R: TagRepository>(
     repo.get_tag_adj_list(tag_id)
 }
 
+pub fn get_tags_by_prefix<R: TagRepository>(
+    prefix: &str,
+    limit: Option<usize>,
+    repo: &R,
+) -> Result<Option<Vec<Tag>>, R::Error> {
+    repo.search_tags(prefix, limit)
+}
+
+/// Query function to retrieve the tags aliased to the given tag.
+pub fn get_tag_aliases<R: TagRepository>(
+    tag_id: &str,
+    repo: &R,
+) -> Result<Option<Vec<String>>, R::Error> {
+    repo.get_tag_aliases(tag_id)
+}
+
 /// Query function to retrieve relationship keys starting with the given prefix.
 /// Keep in mind that relationships are normalized.
 pub fn get_relationships_by_prefix<R: TagRepository>(

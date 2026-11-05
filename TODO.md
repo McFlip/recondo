@@ -8,7 +8,7 @@
   - [x] Delete
   - [x] Recycle Bin?
   - [x] Details page for videos
-- [ ] Manage a Relationship
+- [x] Manage a Relationship
   - [x] Merge
-  - [ ] Alias
+  - [x] Alias
 
