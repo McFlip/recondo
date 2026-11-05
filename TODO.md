@@ -2,7 +2,7 @@
 
 - [ ] Manage a Collection
   - [x] Save a collection
-  - [ ] Add tags to collection
+  - [x] Add tags to collection
   - [ ] Add media to collection
 - [x] Manage an Item
   - [x] Delete

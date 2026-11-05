@@ -294,6 +294,7 @@ h1 em, h2 em { color: var(--accent); font-family: var(--serif); font-weight: 500
 .details-tag-notice, .details-tag-error { margin: 0 0 14px; padding: 10px 12px; border: 1px solid #465139; color: var(--accent); font-size: 12px; }
 .details-tag-error { border-color: #70443d; color: #f0a08d; }
 .details-tag-picker { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, .7fr); gap: 20px; }
+.media-bulk-tag-picker { grid-template-columns: 1fr; }
 .details-existing-tag-picker, .details-create-tag-pair { min-width: 0; }
 .details-relationship-suggestions, .details-relationship-tags { margin-top: 10px; }
 .details-picker-result-card { margin-top: 12px; }
@@ -708,6 +709,24 @@ h1 em, h2 em { color: var(--accent); font-family: var(--serif); font-weight: 500
 .collection-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+ .media-sidebar-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.media-sidebar-tab {
+  border: 1px solid #3a3f34;
+  background: #171a15;
+  color: var(--faint);
+  padding: 6px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+.media-sidebar-tab.is-selected {
+  border-color: #9e6d59;
+  color: #e6a18a;
 }
 
 @media (prefers-reduced-motion: reduce) {

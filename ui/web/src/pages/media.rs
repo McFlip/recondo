@@ -21,7 +21,7 @@ impl Operation {
         matches!(self, Self::AndThenOr | Self::OrThenAnd)
     }
 
-    fn query_value(self) -> &'static str {
+    pub fn query_value(self) -> &'static str {
         match self {
             Self::And => "and",
             Self::Or => "or",
@@ -85,11 +85,16 @@ pub fn render(
                 div class="media-workspace" {
                     aside
                         class="media-sidebar"
+                        data-signals="{ sidebarMode: 'discover' }"
                         aria-label=(if matches!(operation, Operation::Or) || operation.is_grouped() {
                             "Add tags"
                         } else {
                             "Related tags"
                         }) {
+                        nav class="media-sidebar-tabs" aria-label="Sidebar mode" {
+                            button type="button" class="media-sidebar-tab" data-class:is-selected="$sidebarMode === 'discover'" data-on:click="$sidebarMode = 'discover'" { "Discover" }
+                            button type="button" class="media-sidebar-tab" data-class:is-selected="$sidebarMode === 'tag'" data-on:click="$sidebarMode = 'tag'" { "Tag results" }
+                        }
                         div class="media-sidebar-heading" {
                             p class="eyebrow" {
                                 @if operation == Operation::Or {
@@ -108,6 +113,7 @@ pub fn render(
                                 }
                             }
                         }
+                        div data-show="$sidebarMode === 'discover'" {
                         @if matches!(operation, Operation::Or) || operation.is_grouped() {
                             (relationship_picker(
                                 &tag_ids,
@@ -133,6 +139,10 @@ pub fn render(
                                     }
                                 }
                             }
+                        }
+                        }
+                        div data-show="$sidebarMode === 'tag'" {
+                            (bulk_tag_form(&tag_ids, groups, add_to_groups, limit, operation))
                         }
                     }
 
@@ -1309,5 +1319,184 @@ mod tests {
         assert!(!html.contains("Download file"));
         assert!(html.contains("media-item-title-link"));
         assert!(html.contains("/media/details?id=video-id&amp;return_to=%2Fmedia%3Ftag%3Dabc%26limit%3D10"));
+    }
+}
+
+pub fn bulk_tag_form(
+    tag_ids: &[String],
+    groups: &[Vec<String>],
+    add_to_groups: &[usize],
+    limit: usize,
+    operation: Operation,
+) -> Markup {
+    let mut state_serializer = url::form_urlencoded::Serializer::new(String::new());
+    if operation.is_grouped() {
+        state_serializer.append_pair("operation", operation.query_value());
+        for group in groups {
+            state_serializer.append_pair("group", &group.join(","));
+        }
+        for target in add_to_groups {
+            state_serializer.append_pair("target", &target.to_string());
+        }
+    } else {
+        for id in tag_ids {
+            state_serializer.append_pair("tag", id);
+        }
+        if operation == Operation::Or {
+            state_serializer.append_pair("operation", "or");
+        }
+    }
+    state_serializer.append_pair("limit", &limit_value(limit));
+    let state = state_serializer.finish();
+    html! {
+        section class="details-tag-picker media-bulk-tag-picker" {
+            form class="details-create-tag-pair" method="post" action="/media/tag-all" {
+                (hidden_search_state(tag_ids, groups, add_to_groups, operation))
+                input type="hidden" name="limit" value=(limit_value(limit));
+                fieldset {
+                    legend { "Create a relationship and tag" }
+                    p class="processed-hint" {
+                        "Both fields are required; the pair is added to every item in the current results."
+                    }
+                    label for="bulk-new-relationship" { "Relationship" }
+                    input
+                        id="bulk-new-relationship"
+                        name="relationship"
+                        type="text"
+                        placeholder="e.g. location"
+                        required;
+                    label for="bulk-new-tag" { "Tag" }
+                    input
+                        id="bulk-new-tag"
+                        name="tag_name"
+                        type="text"
+                        placeholder="e.g. kitchen"
+                        required;
+                    button type="submit" class="operation-button" { "Add to all results" }
+                }
+            }
+            div class="details-existing-tag-picker" {
+                label for="bulk-relationship-query" class="explore-search-label" {
+                    "FIND AN EXISTING RELATIONSHIP"
+                }
+                input
+                    id="bulk-relationship-query"
+                    type="search"
+                    placeholder="Try “place” or “to do”"
+                    autocomplete="off"
+                    aria-controls="bulk-relationship-suggestions"
+                    data-state=(state.clone())
+                    data-bind:bulkrelationshipquery=""
+                    data-on:input="@get('/media/tag-results/relationship-search?prefix='+encodeURIComponent($bulkrelationshipquery)+'&'+el.dataset.state)";
+                div
+                    id="bulk-relationship-suggestions"
+                    class="details-relationship-suggestions"
+                    role="status"
+                    aria-live="polite" {
+                    p class="explore-hint" { "Search for a relationship to add one of its tags." }
+                }
+                div
+                    id="bulk-relationship-tags"
+                    class="details-relationship-tags"
+                    aria-live="polite" {
+                    p class="explore-hint" { "Choose a relationship to see available tags." }
+                }
+            }
+        }
+    }
+}
+
+
+pub fn bulk_picker_error(message: &str) -> Markup {
+    html! {
+        div id="bulk-relationship-suggestions" class="details-relationship-suggestions" role="alert" {
+            p class="details-tag-error" { (message) }
+        }
+    }
+}
+
+pub fn bulk_picker_tags_error(message: &str) -> Markup {
+    html! {
+        div id="bulk-relationship-tags" class="details-relationship-tags" role="alert" {
+            p class="details-tag-error" { (message) }
+        }
+    }
+}
+
+
+pub fn bulk_picker_suggestions(prefix: &str, relationships: &[String], state: &str) -> Markup {
+    html! {
+        div id="bulk-relationship-suggestions" class="details-relationship-suggestions" role="status" aria-live="polite" {
+            @if prefix.trim().is_empty() {
+                p class="explore-hint" { "Search for a relationship to add one of its tags." }
+            } @else if relationships.is_empty() {
+                p class="explore-hint" { "No relationships match “" (prefix) "”." }
+            } @else {
+                p class="suggestion-count" {
+                    "RELATIONSHIPS"
+                    span { (relationships.len()) }
+                }
+                ul class="relationship-option-list" {
+                    @for relationship in relationships {
+                        li {
+                            button
+                                type="button"
+                                class="relationship-option"
+                                data-relationship=(relationship)
+                                data-state=(state)
+                                data-on:click="@get('/media/tag-results/relationship?name='+encodeURIComponent(el.dataset.relationship)+'&'+el.dataset.state)" {
+                                span { (relationship) }
+                                span class="relationship-option-arrow" aria-hidden="true" { "↗" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn bulk_picker_tags(
+    relationship: &str,
+    tags: &[Tag],
+    tag_ids: &[String],
+    groups: &[Vec<String>],
+    add_to_groups: &[usize],
+    limit: usize,
+    operation: Operation,
+) -> Markup {
+    let hidden = hidden_search_state(tag_ids, groups, add_to_groups, operation);
+    html! {
+        div id="bulk-relationship-tags" class="details-relationship-tags" aria-live="polite" {
+            article class="relationship-result-card details-picker-result-card" {
+                div class="relationship-result-heading" {
+                    div {
+                        p class="eyebrow" { "RELATIONSHIP" }
+                        h3 { (relationship) }
+                    }
+                    span class="relationship-tag-count" { (tags.len()) " available" }
+                }
+                @if tags.is_empty() {
+                    p class="explore-hint" { "This relationship has no tags yet. Create a relationship/tag pair below." }
+                } @else {
+                    div class="relationship-tag-grid" {
+                        @for tag in tags {
+                            form method="post" action="/media/tag-all" {
+                                (hidden.clone())
+                                input type="hidden" name="limit" value=(limit_value(limit));
+                                input type="hidden" name="relationship" value=(relationship);
+                                input type="hidden" name="tag_name" value=(tag.name());
+                                button
+                                    type="submit"
+                                    class="relationship-tag-card media-picker-tag" {
+                                    span class="relationship-tag-mark" aria-hidden="true" { "+" }
+                                    strong { (tag.name()) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

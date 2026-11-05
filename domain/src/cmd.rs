@@ -221,6 +221,32 @@ pub fn add_tag_to_media<R: TagRepository>(
     Ok(tag)
 }
 
+pub fn add_tag_to_media_items<R: TagRepository>(
+    media_ids: &[String],
+    tag_name: &str,
+    relationship: &str,
+    repo: &R,
+) -> Result<usize, AddTagError<R::Error>> {
+    if relationship.trim().is_empty() {
+        return Err(AddTagError::EmptyRelationship);
+    }
+    let tag = model::Tag::new(tag_name).map_err(AddTagError::Tag)?;
+    let relationship = model::normalize_relationship(relationship);
+    if relationship.is_empty() {
+        return Err(AddTagError::EmptyRelationship);
+    }
+    let mut count = 0;
+    for media_id in media_ids {
+        if media_id.is_empty() {
+            return Err(AddTagError::EmptyMediaId);
+        }
+        repo.add_tag_edge(media_id, &tag, &relationship)
+            .map_err(AddTagError::Repository)?;
+        count += 1;
+    }
+    Ok(count)
+}
+
 #[derive(Debug)]
 pub enum RemoveTagError<E> {
     EmptyMediaId,

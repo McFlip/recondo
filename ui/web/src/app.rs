@@ -79,6 +79,15 @@ pub fn router(state: AppState) -> Router {
             "/media/relationship-submit",
             get(media_picker_submit_relationship),
         )
+        .route("/media/tag-all", post(add_tags_to_search_results_handler))
+        .route(
+            "/media/tag-results/relationship-search",
+            get(bulk_relationship_search),
+        )
+        .route(
+            "/media/tag-results/relationship",
+            get(bulk_relationship_tags),
+        )
         .route("/asset/{id}", get(media_asset_by_id))
         .route("/upload", get(upload_page))
         .route("/upload", post(upload_handler))
@@ -795,6 +804,160 @@ async fn add_media_detail_tag(State(state): State<AppState>, body: Bytes) -> Res
     }
 }
 
+async fn add_tags_to_search_results_handler(State(state): State<AppState>, body: Bytes) -> Response {
+    let body_str = String::from_utf8_lossy(&body);
+    let mut relationship = String::new();
+    let mut tag_name = String::new();
+    for (key, value) in url::form_urlencoded::parse(body_str.as_bytes()) {
+        match key.as_ref() {
+            "relationship" if relationship.is_empty() => relationship = value.into_owned(),
+            "tag_name" if tag_name.is_empty() => tag_name = value.into_owned(),
+            _ => {}
+        }
+    }
+    let params = parse_media_query(&body_str);
+    if relationship.trim().is_empty() || tag_name.trim().is_empty() {
+        return Redirect::to(&media_page_url_from_params(
+            &params,
+            None,
+            Some("A relationship and tag are required."),
+        ))
+        .into_response();
+    }
+    let tag_ids = params.tag_ids.clone();
+    let groups = params.groups.clone();
+    let operation = params.operation;
+    let repo = state.repo.clone();
+    let relationship_for_task = relationship.clone();
+    let tag_name_for_task = tag_name.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let query = match operation {
+            media::Operation::And => {
+                get_enriched_media_by_logical_and(&tag_ids, usize::MAX, repo.as_ref())
+            }
+            media::Operation::Or => {
+                get_enriched_media_by_logical_or(&tag_ids, usize::MAX, repo.as_ref())
+            }
+            media::Operation::AndThenOr => {
+                get_enriched_media_by_logical_and_then_or(&groups, usize::MAX, repo.as_ref())
+            }
+            media::Operation::OrThenAnd => {
+                get_enriched_media_by_logical_or_then_and(&groups, usize::MAX, repo.as_ref())
+            }
+        }
+        .map_err(|error| error.to_string())?;
+        let media_ids = match query.media {
+            recondo_domain::MediaQueryItems::Items(items) => {
+                items.into_iter().map(|media| media.id.as_str().to_string()).collect::<Vec<_>>()
+            }
+            recondo_domain::MediaQueryItems::Count(_) => Vec::new(),
+        };
+        if media_ids.is_empty() {
+            return Err("No media items were found in the current search results.".to_string());
+        }
+        let count = recondo_domain::cmd::add_tag_to_media_items(
+            &media_ids,
+            &tag_name_for_task,
+            &relationship_for_task,
+            repo.as_ref(),
+        )
+        .map_err(|error| error.to_string())?;
+        Ok::<_, String>(count)
+    })
+    .await;
+
+    let redirect_url = media_page_url_from_params(&params, None, None);
+    match result {
+        Ok(Ok(count)) => Redirect::to(&media_page_url_from_params(
+            &params,
+            Some(&format!("Tag added to {count} item(s).")),
+            None,
+        ))
+        .into_response(),
+        Ok(Err(error)) => {
+            eprintln!("Could not add tags to search results: {error}");
+            Redirect::to(&media_page_url_from_params(&params, None, Some(&error))).into_response()
+        }
+        Err(error) => {
+            eprintln!("Bulk tag task failed: {error}");
+            Redirect::to(&redirect_url).into_response()
+        }
+    }
+}
+
+async fn bulk_relationship_search(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let prefix = params.get("prefix").cloned().unwrap_or_default();
+    let media_params = parse_media_query_from_map(&params);
+    let state_str = media_state_string(&media_params);
+    let repo = state.repo;
+    let query_prefix = prefix.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        get_relationships_by_prefix(&query_prefix, Some(12), repo.as_ref())
+            .map(|relationships| relationships.unwrap_or_default())
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    let markup = match result {
+        Ok(Ok(relationships)) => media::bulk_picker_suggestions(&prefix, &relationships, &state_str),
+        Ok(Err(error)) => {
+            eprintln!("Bulk relationship search failed: {error}");
+            media::bulk_picker_error(&error)
+        }
+        Err(error) => {
+            eprintln!("Bulk relationship search task failed: {error}");
+            media::bulk_picker_error("Relationship search failed. Please try again.")
+        }
+    };
+    patch_response("#bulk-relationship-suggestions", markup)
+}
+
+async fn bulk_relationship_tags(
+    State(state): State<AppState>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let relationship = params.get("name").cloned().unwrap_or_default();
+    let relationship = normalize_relationship(&relationship);
+    if relationship.is_empty() {
+        return patch_response(
+            "#bulk-relationship-tags",
+            media::bulk_picker_tags_error("Choose a relationship to see its tags."),
+        );
+    }
+    let media_params = parse_media_query_from_map(&params);
+    let repo = state.repo;
+    let relationship_name = relationship.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let tags = get_tags_by_relationship(&relationship, repo.as_ref())
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        Ok::<_, String>(tags)
+    })
+    .await;
+    let markup = match result {
+        Ok(Ok(tags)) => media::bulk_picker_tags(
+            &relationship_name,
+            &tags,
+            &media_params.tag_ids,
+            &media_params.groups,
+            &media_params.add_to_groups,
+            media_params.limit,
+            media_params.operation,
+        ),
+        Ok(Err(error)) => {
+            eprintln!("Bulk relationship tags failed: {error}");
+            media::bulk_picker_tags_error(&error)
+        }
+        Err(error) => {
+            eprintln!("Bulk relationship tags task failed: {error}");
+            media::bulk_picker_tags_error("Tag search failed. Please try again.")
+        }
+    };
+    patch_response("#bulk-relationship-tags", markup)
+}
+
 async fn update_media_detail_title(State(state): State<AppState>, body: Bytes) -> Response {
     let fields = match parse_form_fields(&body) {
         Ok(fields) => fields,
@@ -1203,6 +1366,43 @@ struct MediaQueryParams {
     operation: media::Operation,
 }
 
+fn parse_media_query_from_map(params: &std::collections::HashMap<String, String>) -> MediaQueryParams {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (key, value) in params {
+        if key != "prefix" && key != "name" {
+            serializer.append_pair(key, value);
+        }
+    }
+    parse_media_query(&serializer.finish())
+}
+
+fn media_state_string(params: &MediaQueryParams) -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    if params.operation.is_grouped() {
+        serializer.append_pair("operation", params.operation.query_value());
+        for group in &params.groups {
+            serializer.append_pair("group", &group.join(","));
+        }
+        for target in &params.add_to_groups {
+            serializer.append_pair("target", &target.to_string());
+        }
+    } else {
+        for id in &params.tag_ids {
+            serializer.append_pair("tag", id);
+        }
+        if params.operation == media::Operation::Or {
+            serializer.append_pair("operation", "or");
+        }
+    }
+    let limit_value = if params.limit == usize::MAX {
+        "unlimited".to_string()
+    } else {
+        params.limit.to_string()
+    };
+    serializer.append_pair("limit", &limit_value);
+    serializer.finish()
+}
+
 fn parse_media_query(query: &str) -> MediaQueryParams {
     let mut tag_ids = Vec::new();
     let mut groups = Vec::new();
@@ -1281,6 +1481,43 @@ fn parse_media_query(query: &str) -> MediaQueryParams {
         limit,
         operation,
     }
+}
+
+fn media_page_url_from_params(
+    params: &MediaQueryParams,
+    notice: Option<&str>,
+    error: Option<&str>,
+) -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    if params.operation.is_grouped() {
+        serializer.append_pair("operation", params.operation.query_value());
+        for group in &params.groups {
+            serializer.append_pair("group", &group.join(","));
+        }
+        for target in &params.add_to_groups {
+            serializer.append_pair("target", &target.to_string());
+        }
+    } else {
+        for id in &params.tag_ids {
+            serializer.append_pair("tag", id);
+        }
+        if params.operation == media::Operation::Or {
+            serializer.append_pair("operation", "or");
+        }
+    }
+    let limit_value = if params.limit == usize::MAX {
+        "unlimited".to_string()
+    } else {
+        params.limit.to_string()
+    };
+    serializer.append_pair("limit", &limit_value);
+    if let Some(notice) = notice {
+        serializer.append_pair("notice", notice);
+    }
+    if let Some(error) = error {
+        serializer.append_pair("error", error);
+    }
+    format!("/media?{}", serializer.finish())
 }
 
 struct MediaPickerParams {
