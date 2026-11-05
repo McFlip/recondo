@@ -39,3 +39,4 @@
 - redb is synchronous, so DB work in handlers is dispatched with `tokio::task::spawn_blocking`.
 - Web state holds `Arc<RedbMediaRepository>` and an `assets_dir` (`PathBuf::from("assets")`).
 - Asset serving validates that the resolved path stays under `assets/` and that the file stem equals the media ID.
+- Prefer Datastar reactivity (signals, `data-on:*`, SSE patch endpoints) over full page reloads when updating UI state.
