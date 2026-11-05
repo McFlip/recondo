@@ -3,7 +3,12 @@ use recondo_domain::model::Tag;
 
 use crate::layout;
 
+#[allow(dead_code)]
 pub fn render() -> Markup {
+    render_with_initial(&[])
+}
+
+pub fn render_with_initial(initial_tag_pairs: &[(String, String)]) -> Markup {
     layout::render(
         "Upload media",
         html! {
@@ -51,10 +56,16 @@ pub fn render() -> Markup {
                             div class="selected-upload-tags-section" {
                                 p class="media-control-label" { "SELECTED TAGS" }
                                 div id="selected-upload-tags" class="selected-upload-tags" aria-live="polite" {
+                                @if initial_tag_pairs.is_empty() {
                                     p id="upload-tag-empty" class="media-muted" {
                                         "No additional tags selected."
                                     }
+                                } @else {
+                                    @for (relationship, tag) in initial_tag_pairs {
+                                        (initial_upload_tag_chip(relationship, tag))
+                                    }
                                 }
+                            }
                                 p id="upload-tag-error" class="explore-error" role="alert" {}
                             }
 
@@ -279,6 +290,29 @@ pub fn relationship_tags_error(message: &str) -> Markup {
     html! {
         div id="upload-relationship-details" class="upload-relationship-details" aria-live="polite" {
             p class="explore-error" { (message) }
+        }
+    }
+}
+
+
+fn initial_upload_tag_chip(relationship: &str, tag: &str) -> Markup {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("relationship", relationship);
+    serializer.append_pair("tag", tag);
+    let value = serializer.finish();
+    let remove_label = format!("Remove {tag} under {relationship}");
+    html! {
+        span class="selected-upload-tag" {
+            input type="hidden" name="tag_pair" value=(value);
+            span class="selected-upload-tag-label" { "#" (tag) " · " (relationship) }
+            button
+                type="button"
+                class="selected-upload-tag-remove"
+                aria-label=(remove_label.clone())
+                title=(remove_label)
+                onclick="window.removeUploadTagPair(this)" {
+                "×"
+            }
         }
     }
 }

@@ -137,8 +137,55 @@ async fn landing_page() -> maud::Markup {
     landing::render()
 }
 
-async fn upload_page() -> maud::Markup {
-    upload::render()
+async fn upload_page(
+    State(state): State<AppState>,
+    RawQuery(raw_query): RawQuery,
+) -> maud::Markup {
+    let params = parse_media_query(raw_query.as_deref().unwrap_or_default());
+    let mut selected_ids = params.tag_ids.clone();
+    if params.operation.is_grouped() {
+        for group in &params.groups {
+            for id in group {
+                if !selected_ids.contains(id) {
+                    selected_ids.push(id.clone());
+                }
+            }
+        }
+    }
+
+    let repo = state.repo.clone();
+    let ids = selected_ids.clone();
+    let resolved = tokio::task::spawn_blocking(move || {
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        for id in &ids {
+            let relationships = get_tag_adj_list(id, repo.as_ref())
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let mut unique_rels: Vec<String> = Vec::new();
+            for (rel, _) in &relationships {
+                if !unique_rels.contains(rel) {
+                    unique_rels.push(rel.clone());
+                }
+            }
+            for rel in &unique_rels {
+                if let Ok(Some(tags)) = get_tags_by_relationship(rel, repo.as_ref())
+                    && let Some(tag) = tags.into_iter().find(|t| t.id() == id)
+                {
+                    let pair = (rel.clone(), tag.name().to_string());
+                    if !pairs.contains(&pair) {
+                        pairs.push(pair);
+                    }
+                    break;
+                }
+            }
+        }
+        pairs
+    })
+    .await
+    .unwrap_or_default();
+
+    upload::render_with_initial(&resolved)
 }
 
 async fn recycle_bin_page(

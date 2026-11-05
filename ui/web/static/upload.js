@@ -53,6 +53,19 @@ window.addUploadTagPair = (relationship, tag) => {
   selectedTags.append(chip);
 };
 
+window.removeUploadTagPair = (button) => {
+  const chip = button.closest('.selected-upload-tag');
+  if (chip) chip.remove();
+  const selectedTags = document.getElementById('selected-upload-tags');
+  if (selectedTags && !selectedTags.querySelector('input[name="tag_pair"]')) {
+    const empty = document.createElement('p');
+    empty.id = 'upload-tag-empty';
+    empty.className = 'media-muted';
+    empty.textContent = 'No additional tags selected.';
+    selectedTags.append(empty);
+  }
+};
+
 window.clearProcessedUploads = () => {
   const feed = document.getElementById('processed-feed');
   feed.replaceChildren();

@@ -239,6 +239,22 @@ pub fn render(
                                 }
                             }
 
+                            form
+                                class="upload-with-selected-tags"
+                                method="get"
+                                action="/upload" {
+                                (hidden_search_state(&tag_ids, groups, add_to_groups, operation))
+                                input type="hidden" name="limit" value=(limit_value(limit));
+                                button
+                                    type="submit"
+                                    class="save-collection-toggle"
+                                    aria-label="Upload with selected tags"
+                                    title="Upload with selected tags" {
+                                    i class="fa-solid fa-upload" aria-hidden="true" {}
+                                    span class="save-collection-label" { "Upload with selected tags" }
+                                }
+                            }
+
                             section class="selected-tags-section" aria-label="Selected tags" {
                                 p class="media-control-label" { "SELECTED TAGS" }
                                 @if operation.is_grouped() {
