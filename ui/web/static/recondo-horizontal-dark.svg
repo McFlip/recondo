@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 150">
+<rect width="640" height="150" fill="#151713"/>
+  <g transform="translate(8 12) scale(1.25)">
+    <path d="M25 7 H75 V36 H91 L50 93 L9 36 H25 Z" fill="none"
+          stroke="#556B2F" stroke-width="4.5" stroke-linecap="square" stroke-linejoin="miter"/>
+    <path d="M21 42 L50 75 L79 42" fill="none" stroke="#7CFF00" stroke-width="5.5"
+          stroke-linecap="square" stroke-linejoin="miter"/>
+    <path d="M39 34 V15 H55.5 C61 15 64 18 64 22.5 C64 27 61 30 55.5 30 H39 M51 30 L64 35"
+          fill="none" stroke="#7CFF00" stroke-width="4.8" stroke-linecap="square" stroke-linejoin="miter"/>
+  </g>
+  <path d="M145 24 V126" stroke="#7CFF00" stroke-width="2"/>
+  <text x="178" y="99" fill="#FFFFFF" font-family="DejaVu Sans, Arial, sans-serif"
+        font-size="66" font-weight="800" letter-spacing="5">RECONDO</text>
+</svg>

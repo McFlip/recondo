@@ -18,11 +18,14 @@ use datastar::{
 };
 use recondo_dal::media::RedbMediaRepository;
 use recondo_domain::cmd::{
-    CreateMediaOutcome, add_tag_to_media, alias_tags, create_media_from_file_in_with_tags_and_title,
-    delete_collection, empty_recycle_bin, merge_relationship, permanently_delete_media,
-    recycle_media, remove_tag_from_media, restore_media, save_collection,
+    CreateMediaOutcome, add_tag_to_media, alias_tags,
+    create_media_from_file_in_with_tags_and_title, delete_collection, empty_recycle_bin,
+    merge_relationship, permanently_delete_media, recycle_media, remove_tag_from_media,
+    restore_media, save_collection,
 };
-use recondo_domain::model::{Collection, MediaId, Tag, normalize_collection_name, normalize_relationship};
+use recondo_domain::model::{
+    Collection, MediaId, Tag, normalize_collection_name, normalize_relationship,
+};
 use recondo_domain::repository::{MediaRepository, TagRepository};
 use recondo_domain::{
     get_collections_by_prefix, get_enriched_media_by_logical_and,
@@ -58,8 +61,14 @@ pub fn router(state: AppState) -> Router {
             "/relationship/manage/search",
             get(search_merge_relationships),
         )
-        .route("/relationship/manage/merge", post(merge_relationship_handler))
-        .route("/relationship/manage/alias", post(manage_alias_tags_handler))
+        .route(
+            "/relationship/manage/merge",
+            post(merge_relationship_handler),
+        )
+        .route(
+            "/relationship/manage/alias",
+            post(manage_alias_tags_handler),
+        )
         .route("/relationship/manage/tag-search", get(search_alias_tags))
         .route("/tags/alias", get(alias_tags_page))
         .route("/tags/alias", post(alias_tags_handler))
@@ -112,6 +121,8 @@ pub fn router(state: AppState) -> Router {
         .route("/media.js", get(media_script))
         .route("/demo/{filter}", get(filter_demo))
         .route("/styles.css", get(stylesheet))
+        .route("/mark.svg", get(brand_mark))
+        .route("/favicon.ico", get(favicon))
         .route("/media/{filename}", get(media_asset))
         .with_state(state)
         .layer(body_limit_layer())
@@ -141,10 +152,7 @@ async fn landing_page() -> maud::Markup {
     landing::render()
 }
 
-async fn upload_page(
-    State(state): State<AppState>,
-    RawQuery(raw_query): RawQuery,
-) -> maud::Markup {
+async fn upload_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery) -> maud::Markup {
     let params = parse_media_query(raw_query.as_deref().unwrap_or_default());
     let mut selected_ids = params.tag_ids.clone();
     if params.operation.is_grouped() {
@@ -393,17 +401,11 @@ async fn search_collections(
         Ok(Ok(collections)) => collections,
         Ok(Err(error)) => {
             eprintln!("Could not search collections: {error}");
-            return patch_response(
-                "#collections-results",
-                collections::results(&[], &prefix),
-            );
+            return patch_response("#collections-results", collections::results(&[], &prefix));
         }
         Err(error) => {
             eprintln!("Collections search task failed: {error}");
-            return patch_response(
-                "#collections-results",
-                collections::results(&[], &prefix),
-            );
+            return patch_response("#collections-results", collections::results(&[], &prefix));
         }
     };
 
@@ -417,7 +419,10 @@ async fn search_collections(
         resolved.push((collection, tag_names));
     }
 
-    patch_response("#collections-results", collections::results(&resolved, &prefix))
+    patch_response(
+        "#collections-results",
+        collections::results(&resolved, &prefix),
+    )
 }
 
 async fn save_collection_handler(State(state): State<AppState>, body: Bytes) -> Response {
@@ -627,7 +632,8 @@ async fn search_merge_relationships(
     State(state): State<AppState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
-    let source = normalize_relationship(params.get("source").map(String::as_str).unwrap_or_default());
+    let source =
+        normalize_relationship(params.get("source").map(String::as_str).unwrap_or_default());
     let prefix = params.get("prefix").cloned().unwrap_or_default();
     if source.is_empty() {
         return patch_response(
@@ -653,7 +659,9 @@ async fn search_merge_relationships(
     let markup = match result {
         Ok(Ok(relationships)) => explore::merge_suggestions(&source, &prefix, &relationships),
         Ok(Err(error)) => {
-            eprintln!("Error searching merge destination relationships by prefix {prefix:?}: {error}");
+            eprintln!(
+                "Error searching merge destination relationships by prefix {prefix:?}: {error}"
+            );
             explore::merge_suggestion_error(&format!("Could not search relationships: {error}"))
         }
         Err(error) => {
@@ -673,7 +681,8 @@ async fn merge_relationship_handler(State(state): State<AppState>, body: Bytes) 
             return StatusCode::BAD_REQUEST.into_response();
         }
     };
-    let source = normalize_relationship(fields.get("source").map(String::as_str).unwrap_or_default());
+    let source =
+        normalize_relationship(fields.get("source").map(String::as_str).unwrap_or_default());
     let destination = normalize_relationship(
         fields
             .get("destination")
@@ -855,7 +864,10 @@ async fn add_media_detail_tag(State(state): State<AppState>, body: Bytes) -> Res
     }
 }
 
-async fn add_tags_to_search_results_handler(State(state): State<AppState>, body: Bytes) -> Response {
+async fn add_tags_to_search_results_handler(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Response {
     let body_str = String::from_utf8_lossy(&body);
     let mut relationship = String::new();
     let mut tag_name = String::new();
@@ -898,9 +910,10 @@ async fn add_tags_to_search_results_handler(State(state): State<AppState>, body:
         }
         .map_err(|error| error.to_string())?;
         let media_ids = match query.media {
-            recondo_domain::MediaQueryItems::Items(items) => {
-                items.into_iter().map(|media| media.id.as_str().to_string()).collect::<Vec<_>>()
-            }
+            recondo_domain::MediaQueryItems::Items(items) => items
+                .into_iter()
+                .map(|media| media.id.as_str().to_string())
+                .collect::<Vec<_>>(),
             recondo_domain::MediaQueryItems::Count(_) => Vec::new(),
         };
         if media_ids.is_empty() {
@@ -952,7 +965,9 @@ async fn bulk_relationship_search(
     })
     .await;
     let markup = match result {
-        Ok(Ok(relationships)) => media::bulk_picker_suggestions(&prefix, &relationships, &state_str),
+        Ok(Ok(relationships)) => {
+            media::bulk_picker_suggestions(&prefix, &relationships, &state_str)
+        }
         Ok(Err(error)) => {
             eprintln!("Bulk relationship search failed: {error}");
             media::bulk_picker_error(&error)
@@ -1027,7 +1042,11 @@ async fn update_media_detail_title(State(state): State<AppState>, body: Bytes) -
     let title = fields.get("title").cloned().unwrap_or_default();
     let title = {
         let trimmed = title.trim();
-        if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
     };
 
     let repo = state.repo;
@@ -1040,18 +1059,25 @@ async fn update_media_detail_title(State(state): State<AppState>, body: Bytes) -
             return Err("media not found".to_string());
         };
         media.title = title;
-        repo.save_media_record(&media).map_err(|error| error.to_string())?;
+        repo.save_media_record(&media)
+            .map_err(|error| error.to_string())?;
         Ok::<_, String>(())
     })
     .await
     {
         Ok(Ok(())) => details_redirect(&media_id, return_to, Some("Title updated."), None),
         Ok(Err(error)) => {
-            eprintln!("Could not update title for media {}: {error}", media_id.as_str());
+            eprintln!(
+                "Could not update title for media {}: {error}",
+                media_id.as_str()
+            );
             details_redirect(&media_id, return_to, None, Some("Could not update title."))
         }
         Err(error) => {
-            eprintln!("Media title update task failed for {}: {error}", media_id.as_str());
+            eprintln!(
+                "Media title update task failed for {}: {error}",
+                media_id.as_str()
+            );
             details_redirect(&media_id, return_to, None, Some("Could not update title."))
         }
     }
@@ -1071,8 +1097,8 @@ async fn recycle_media_detail_handler(State(state): State<AppState>, body: Bytes
     let Ok(media_id) = MediaId::from_hash(media_id.clone()) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let return_to = valid_media_return_url(fields.get("return_to").map(String::as_str))
-        .map(str::to_string);
+    let return_to =
+        valid_media_return_url(fields.get("return_to").map(String::as_str)).map(str::to_string);
     let repo = state.repo;
     let cmd_id = media_id.clone();
     match tokio::task::spawn_blocking(move || recycle_media(&cmd_id, repo.as_ref())).await {
@@ -1091,7 +1117,10 @@ async fn recycle_media_detail_handler(State(state): State<AppState>, body: Bytes
             )
         }
         Err(error) => {
-            eprintln!("Media recycle task failed for {}: {error}", media_id.as_str());
+            eprintln!(
+                "Media recycle task failed for {}: {error}",
+                media_id.as_str()
+            );
             details_redirect(
                 &media_id,
                 return_to.as_deref(),
@@ -1417,7 +1446,9 @@ struct MediaQueryParams {
     operation: media::Operation,
 }
 
-fn parse_media_query_from_map(params: &std::collections::HashMap<String, String>) -> MediaQueryParams {
+fn parse_media_query_from_map(
+    params: &std::collections::HashMap<String, String>,
+) -> MediaQueryParams {
     let mut serializer = url::form_urlencoded::Serializer::new(String::new());
     for (key, value) in params {
         if key != "prefix" && key != "name" {
@@ -2327,11 +2358,9 @@ async fn manage_alias_tags_handler(State(state): State<AppState>, body: Bytes) -
             Some(&format!("Aliased “{tag_a}” to “{tag_b}”.")),
             None,
         ),
-        Ok(Err(error)) => manage_relationship_redirect(
-            &normalize_relationship(&source),
-            None,
-            Some(&error),
-        ),
+        Ok(Err(error)) => {
+            manage_relationship_redirect(&normalize_relationship(&source), None, Some(&error))
+        }
         Err(_) => manage_relationship_redirect(
             &normalize_relationship(&source),
             None,
@@ -2380,6 +2409,20 @@ async fn stylesheet() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
         include_str!("../static/styles.css"),
+    )
+}
+
+async fn brand_mark() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/svg+xml")],
+        include_str!("../static/recondo-horizontal-dark.svg"),
+    )
+}
+
+async fn favicon() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../static/favicon.ico").as_slice(),
     )
 }
 
@@ -2934,10 +2977,7 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri("/relationship/manage/merge")
-                    .header(
-                        header::CONTENT_TYPE,
-                        "application/x-www-form-urlencoded",
-                    )
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                     .body(Body::from("source=topic&destination=to+do"))
                     .unwrap(),
             )
@@ -3685,12 +3725,16 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn collections_page_renders() {
         let (state, _tmp) = test_app_state();
         let response = router(state)
-            .oneshot(Request::builder().uri("/collections").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/collections")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);

@@ -4,8 +4,7 @@ pub fn site_header() -> Markup {
     html! {
         header class="site-header" {
             a class="wordmark" href="/" aria-label="Recondo home" {
-                span class="wordmark-mark" aria-hidden="true" { "R" }
-                "recondo"
+                img src="/mark.svg" width="300" height="70";
             }
             nav aria-label="Main navigation" {
                 a class="nav-cta" href="/explore" { "Explore" }
@@ -21,8 +20,7 @@ pub fn site_footer() -> Markup {
     html! {
         footer class="site-footer" {
             a class="wordmark footer-wordmark" href="/" {
-                span class="wordmark-mark" aria-hidden="true" { "R" }
-                "recondo"
+                img src="/mark.svg" width="300" height="70";
             }
             p { "A more curious way to find what you’re looking for." }
             span class="footer-note" { "Under development · Apache-2.0" }
