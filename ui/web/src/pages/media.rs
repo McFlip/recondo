@@ -302,6 +302,23 @@ pub fn render(
                     data-on:click="el.closest('dialog').close()" {
                     "×"
                 }
+                form
+                    id="media-lightbox-recycle-form"
+                    class="details-recycle-form media-lightbox-recycle-form"
+                    method="post"
+                    action="/media/details/recycle" {
+                    input type="hidden" id="media-lightbox-media-id" name="media_id" value="";
+                    input type="hidden" id="media-lightbox-return-to" name="return_to" value="";
+                    button
+                        type="submit"
+                        class="media-group-delete details-recycle-button"
+                        aria-label="Move to recycle bin"
+                        title="Move to recycle bin" {
+                        svg class="media-trash-icon" viewBox="0 0 24 24" aria-hidden="true" {
+                            path d="M4 7h16M10 11v6m4-6v6M5 7l1 14h12l1-14M9 7V4h6v3";
+                        }
+                    }
+                }
                 button
                     type="button"
                     id="media-lightbox-prev"

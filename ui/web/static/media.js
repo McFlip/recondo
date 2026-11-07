@@ -55,6 +55,15 @@ window.updateMediaLightbox = () => {
     openBtn.href = currentMediaId ? mediaDetailsUrl(currentMediaId) : '#';
   }
 
+  const mediaIdInput = document.getElementById('media-lightbox-media-id');
+  if (mediaIdInput) {
+    mediaIdInput.value = currentMediaId || '';
+  }
+  const returnToInput = document.getElementById('media-lightbox-return-to');
+  if (returnToInput) {
+    returnToInput.value = window.location.pathname + window.location.search;
+  }
+
   if (prevBtn) {
     prevBtn.disabled = currentLightboxIndex <= 0;
   }

@@ -278,6 +278,7 @@ h1 em, h2 em { color: var(--accent); font-family: var(--serif); font-weight: 500
 .media-lightbox-nav:disabled { opacity: 0.3; cursor: not-allowed; border-color: #31352b; color: #5a6052; }
 .media-lightbox-open { position: absolute; top: 7px; left: 9px; padding: 6px 10px; border: 1px solid #454a3e; background: #1a1d17; color: var(--ink); text-decoration: none; font-size: 12px; }
 .media-lightbox-open:hover { border-color: var(--accent); color: var(--accent); }
+.media-lightbox-recycle-form { position: absolute; top: 7px; left: 100px; margin: 0; z-index: 5; }
 .media-details { max-width: 900px; margin: 0 auto; }
 .back-button { display: inline-block; margin-bottom: 16px; color: var(--accent); text-decoration: none; }
 .details-meta { margin-bottom: 20px; }
