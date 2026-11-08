@@ -1307,7 +1307,7 @@ fn media_card(item: &Media, return_to: &str) -> Markup {
                         alt=(title)
                         loading="lazy"
                         data-media-id=(item.id.as_str())
-                        data-on:click="window.openMediaLightbox(el)";
+                        data-on:click__prevent="window.openMediaLightbox(el)";
                 } @else if is_video {
                     video controls preload="metadata" src=(asset_url) {
                         "Your browser does not support embedded video."

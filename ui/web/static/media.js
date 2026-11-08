@@ -25,12 +25,22 @@ window.openMediaLightbox = (clickedImg) => {
   const dialog = document.getElementById('media-lightbox');
   if (!dialog) return;
 
+  const scrollX = window.scrollX;
+  const scrollY = window.scrollY;
+
   dialog.showModal();
   window.updateMediaLightbox();
   const lightboxImg = document.getElementById('media-lightbox-image');
   if (lightboxImg) {
     lightboxImg.decode?.().catch(() => {});
   }
+
+  const closeBtn = dialog.querySelector('.media-lightbox-close');
+  if (closeBtn) {
+    closeBtn.focus({ preventScroll: true });
+  }
+  window.scrollTo(scrollX, scrollY);
+  requestAnimationFrame(() => window.scrollTo(scrollX, scrollY));
 };
 
 window.updateMediaLightbox = () => {

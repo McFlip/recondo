@@ -265,7 +265,7 @@ h1 em, h2 em { color: var(--accent); font-family: var(--serif); font-weight: 500
 .media-count-result .media-control-note { margin-top: 9px; }
 .media-empty-state, .media-error { margin: 0; padding: 28px 8px; color: var(--faint); font-size: 12px; line-height: 1.7; }
 .media-error { color: #fb8e7d; }
-.media-lightbox { position: relative; max-width: 96vw; max-height: 95vh; padding: 42px 12px 12px; border: 1px solid #454a3e; background: #11130f; }
+.media-lightbox {  max-width: 96vw; max-height: 95vh; padding: 42px 12px 12px; border: 1px solid #454a3e; background: #11130f; }
 .media-lightbox::backdrop { background: rgb(0 0 0 / 88%); backdrop-filter: blur(4px); }
 .media-lightbox img { display: block; width: 100%; max-width: 92vw; max-height: 85vh; object-fit: contain; }
 .media-lightbox-close { position: absolute; top: 7px; right: 9px; display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid #454a3e; background: #1a1d17; color: var(--ink); cursor: pointer; font-size: 20px; }
