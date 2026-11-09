@@ -352,7 +352,6 @@ test('media details can add, create, remove, and retain relationship-tag pairs',
   await page.getByRole('button', { name: 'subject', exact: true }).click();
   await expect(page.locator('#details-relationship-tags')).toContainText('field note');
   await page.getByRole('button', { name: 'field note' }).click();
-  await expect(page).toHaveURL(/notice=Tag\+added\./);
   await expect(page.locator('.details-tag-group[aria-label="subject"]')).toContainText(
     'field note',
   );
@@ -368,7 +367,6 @@ test('media details can add, create, remove, and retain relationship-tag pairs',
   await page.getByLabel('Relationship', { exact: true }).fill(relationship);
   await page.getByLabel('Tag', { exact: true }).fill(tag);
   await page.getByRole('button', { name: 'Add pair' }).click();
-  await expect(page).toHaveURL(/notice=Tag\+added\./);
   await expect(page.locator(`.details-tag-group[aria-label="${relationship}"]`)).toContainText(
     tag,
   );
@@ -378,7 +376,6 @@ test('media details can add, create, remove, and retain relationship-tag pairs',
   );
 
   await page.getByRole('button', { name: `Remove ${tag} under ${relationship}` }).click();
-  await expect(page).toHaveURL(/notice=Tag\+removed\./);
   await expect(page.locator(`.details-tag-group[aria-label="${relationship}"]`)).toHaveCount(0);
   await expect(page.locator('.details-tag-group[aria-label="subject"]')).toContainText(
     'field note',

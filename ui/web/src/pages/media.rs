@@ -305,8 +305,7 @@ pub fn render(
                 form
                     id="media-lightbox-recycle-form"
                     class="details-recycle-form media-lightbox-recycle-form"
-                    method="post"
-                    action="/media/details/recycle" {
+                    data-on:submit__prevent="@post('/media/details/recycle', {contentType: 'form'})" {
                     input type="hidden" id="media-lightbox-media-id" name="media_id" value="";
                     input type="hidden" id="media-lightbox-return-to" name="return_to" value="";
                     button
@@ -998,7 +997,7 @@ pub fn render_details(
                 div class="details-meta" {
                     div class="details-header-row" {
                         h1 { (title) }
-                        form class="details-recycle-form" method="post" action="/media/details/recycle" {
+                        form class="details-recycle-form" data-on:submit__prevent="@post('/media/details/recycle', {contentType: 'form'})" {
                             input type="hidden" name="media_id" value=(media_id);
                             @if let Some(return_to) = return_to {
                                 input type="hidden" name="return_to" value=(return_to);
@@ -1030,44 +1029,7 @@ pub fn render_details(
                     @if let Some(error) = error {
                         p class="details-tag-error" role="alert" { (error) }
                     }
-                    div class="details-tag-list" {
-                        @if tag_pairs.is_empty() {
-                            p class="media-muted" { "No tags are associated with this item yet." }
-                        } @else {
-                            @for relationship in tag_pairs.iter().map(|(relationship, _)| relationship).collect::<std::collections::BTreeSet<_>>() {
-                                section class="details-tag-group" aria-label=(relationship) {
-                                    h3 { (relationship) }
-                                    div class="tag-list" {
-                                        @for (tag_relationship, tag) in tag_pairs.iter().filter(|(tag_relationship, _)| tag_relationship == relationship) {
-                                            form class="details-tag-pair" method="post" action="/media/details/tag/remove" {
-                                                input type="hidden" name="media_id" value=(media_id);
-                                                @if let Some(return_to) = return_to {
-                                                    input type="hidden" name="return_to" value=(return_to);
-                                                }
-                                                input type="hidden" name="relationship" value=(tag_relationship);
-                                                input type="hidden" name="tag_id" value=(tag.id());
-                                                a
-                                                    class="tag-chip"
-                                                    href=(media_url(&[tag.id().to_string()], DEFAULT_LIMIT, Operation::And))
-                                                    aria-label=(format!("Search media tagged {}", tag.name())) {
-                                                    "#" (tag.name())
-                                                }
-                                                @if tag_pairs.len() > 1 {
-                                                    button
-                                                        type="submit"
-                                                        class="details-tag-remove"
-                                                        aria-label=(format!("Remove {} under {}", tag.name(), tag_relationship))
-                                                        title="Remove tag" {
-                                                        "×"
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    (details_tag_list(media_id, tag_pairs, return_to))
                     div class="details-tag-picker" {
                         div class="details-existing-tag-picker" {
                             label for="details-relationship-query" class="explore-search-label" {
@@ -1097,7 +1059,7 @@ pub fn render_details(
                                 p class="explore-hint" { "Choose a relationship to see available tags." }
                             }
                         }
-                        form class="details-create-tag-pair" method="post" action="/media/details/tag" {
+                        form class="details-create-tag-pair" data-on:submit__prevent="@post('/media/details/tag', {contentType: 'form'})" {
                             input type="hidden" name="media_id" value=(media_id);
                             @if let Some(return_to) = return_to {
                                 input type="hidden" name="return_to" value=(return_to);
@@ -1127,7 +1089,7 @@ pub fn render_details(
                     }
                 }
                 section class="details-title-management" aria-label="Edit media title" {
-                    form class="details-title-form" method="post" action="/media/details/title" {
+                    form class="details-title-form" data-on:submit__prevent="@post('/media/details/title', {contentType: 'form'})" {
                         input type="hidden" name="media_id" value=(media_id);
                         @if let Some(return_to) = return_to {
                             input type="hidden" name="return_to" value=(return_to);
@@ -1141,6 +1103,7 @@ pub fn render_details(
                             placeholder="No title";
                         button type="submit" class="operation-button" { "Update title" }
                     }
+                    p id="details-title-notice" class="details-tag-notice" role="status" {}
                 }
                 div class="details-media" {
                     @if mime_type.starts_with("image/") {
@@ -1246,7 +1209,7 @@ pub fn details_picker_tags(
                 } @else {
                     div class="relationship-tag-grid" {
                         @for tag in available {
-                            form method="post" action="/media/details/tag" {
+                            form data-on:submit__prevent="@post('/media/details/tag', {contentType: 'form'})" {
                                 input type="hidden" name="media_id" value=(media_id);
                                 @if let Some(return_to) = return_to {
                                     input type="hidden" name="return_to" value=(return_to);
@@ -1524,6 +1487,49 @@ pub fn bulk_picker_tags(
                                     class="relationship-tag-card media-picker-tag" {
                                     span class="relationship-tag-mark" aria-hidden="true" { "+" }
                                     strong { (tag.name()) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub fn details_tag_list(media_id: &str, tag_pairs: &[(String, Tag)], return_to: Option<&str>) -> Markup {
+    html! {
+        div class="details-tag-list" id="details-tag-list" {
+            @if tag_pairs.is_empty() {
+                p class="media-muted" { "No tags are associated with this item yet." }
+            } @else {
+                @for relationship in tag_pairs.iter().map(|(relationship, _)| relationship).collect::<std::collections::BTreeSet<_>>() {
+                    section class="details-tag-group" aria-label=(relationship) {
+                        h3 { (relationship) }
+                        div class="tag-list" {
+                            @for (tag_relationship, tag) in tag_pairs.iter().filter(|(tag_relationship, _)| tag_relationship == relationship) {
+                                form class="details-tag-pair" data-on:submit__prevent="@post('/media/details/tag/remove', {contentType: 'form'})" {
+                                    input type="hidden" name="media_id" value=(media_id);
+                                    @if let Some(return_to) = return_to {
+                                        input type="hidden" name="return_to" value=(return_to);
+                                    }
+                                    input type="hidden" name="relationship" value=(tag_relationship);
+                                    input type="hidden" name="tag_id" value=(tag.id());
+                                    a
+                                        class="tag-chip"
+                                        href=(media_url(&[tag.id().to_string()], DEFAULT_LIMIT, Operation::And))
+                                        aria-label=(format!("Search media tagged {}", tag.name())) {
+                                        "#" (tag.name())
+                                    }
+                                    @if tag_pairs.len() > 1 {
+                                        button
+                                            type="submit"
+                                            class="details-tag-remove"
+                                            aria-label=(format!("Remove {} under {}", tag.name(), tag_relationship))
+                                            title="Remove tag" {
+                                            "×"
+                                        }
+                                    }
                                 }
                             }
                         }

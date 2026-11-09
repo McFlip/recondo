@@ -14,7 +14,7 @@ use axum::{
 };
 use datastar::{
     consts::ElementPatchMode,
-    prelude::{PatchElements, PatchSignals},
+    prelude::{ExecuteScript, PatchElements, PatchSignals},
 };
 use recondo_dal::media::RedbMediaRepository;
 use recondo_domain::cmd::{
@@ -822,44 +822,87 @@ async fn add_media_detail_tag(State(state): State<AppState>, body: Bytes) -> Res
         return StatusCode::BAD_REQUEST.into_response();
     };
     let return_to = valid_media_return_url(fields.get("return_to").map(String::as_str));
+    let return_to_opt = return_to;
     let Some(relationship) = fields.get("relationship") else {
-        return details_redirect(
-            &media_id,
-            return_to,
-            None,
-            Some("A relationship is required."),
-        );
+        return patch_response(
+            "#details-title-notice",
+            maud::html! { p class="details-tag-notice" role="status" { "A relationship is required." } },
+        )
+        .into_response();
     };
     let Some(tag_name) = fields.get("tag") else {
-        return details_redirect(&media_id, return_to, None, Some("A tag is required."));
+        return patch_response(
+            "#details-title-notice",
+            maud::html! { p class="details-tag-notice" role="status" { "A tag is required." } },
+        )
+        .into_response();
     };
 
     let repo = state.repo;
     let command_media_id = media_id.as_str().to_string();
     let relationship = relationship.clone();
     let tag_name = tag_name.clone();
-    match tokio::task::spawn_blocking(move || {
+    let repo_for_fetch = repo.clone();
+    let result = tokio::task::spawn_blocking(move || {
         add_tag_to_media(&command_media_id, &tag_name, &relationship, repo.as_ref())
             .map_err(|error| error.to_string())
     })
-    .await
-    {
-        Ok(Ok(_)) => details_redirect(&media_id, return_to, Some("Tag added."), None),
+    .await;
+
+    let repo2 = repo_for_fetch;
+    let mid = media_id.clone();
+    let pairs = tokio::task::spawn_blocking(move || {
+        let media_id = mid.clone();
+        let edges = repo2
+            .get_media_adj_list(&media_id)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        let mut tag_pairs = Vec::new();
+        for (relationship, tag_id) in edges {
+            let tags = get_tags_by_relationship(&relationship, repo2.as_ref())
+                .map_err(|error| error.to_string())?
+                .unwrap_or_default();
+            if let Some(tag) = tags.into_iter().find(|tag| tag.id() == tag_id) {
+                tag_pairs.push((relationship, tag));
+            }
+        }
+        Ok::<_, String>(tag_pairs)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(_)) => {
+            let tag_pairs = pairs.unwrap_or(Ok(Vec::new())).unwrap_or_default();
+            let markup_list = media::details_tag_list(media_id.as_str(), &tag_pairs, return_to_opt);
+            let events: Vec<Result<axum::response::sse::Event, Infallible>> = vec![
+                Ok(PatchElements::new(markup_list.into_string())
+                    .selector("#details-tag-list")
+                    .mode(ElementPatchMode::Outer)
+                    .into()),
+                Ok(PatchElements::new(
+                    maud::html! { p class="details-tag-notice" role="status" { "Tag added." } }.into_string(),
+                )
+                .selector("#details-title-notice")
+                .mode(ElementPatchMode::Outer)
+                .into()),
+            ];
+            Sse::new(iter(events)).into_response()
+        }
         Ok(Err(error)) => {
             eprintln!("Could not add tag to media {}: {error}", media_id.as_str());
-            details_redirect(&media_id, return_to, None, Some(&error))
+            patch_response(
+                "#details-title-notice",
+                maud::html! { p class="details-tag-notice" role="status" { (error) } },
+            )
+            .into_response()
         }
         Err(error) => {
-            eprintln!(
-                "Media tag add task failed for {}: {error}",
-                media_id.as_str()
-            );
-            details_redirect(
-                &media_id,
-                return_to,
-                None,
-                Some("The tag could not be added. Please try again."),
+            eprintln!("Media tag add task failed for {}: {error}", media_id.as_str());
+            patch_response(
+                "#details-title-notice",
+                maud::html! { p class="details-tag-notice" role="status" { "The tag could not be added. Please try again." } },
             )
+            .into_response()
         }
     }
 }
@@ -1038,7 +1081,7 @@ async fn update_media_detail_title(State(state): State<AppState>, body: Bytes) -
     let Ok(media_id) = MediaId::from_hash(media_id.clone()) else {
         return StatusCode::BAD_REQUEST.into_response();
     };
-    let return_to = valid_media_return_url(fields.get("return_to").map(String::as_str));
+    let _return_to = valid_media_return_url(fields.get("return_to").map(String::as_str));
     let title = fields.get("title").cloned().unwrap_or_default();
     let title = {
         let trimmed = title.trim();
@@ -1065,20 +1108,32 @@ async fn update_media_detail_title(State(state): State<AppState>, body: Bytes) -
     })
     .await
     {
-        Ok(Ok(())) => details_redirect(&media_id, return_to, Some("Title updated."), None),
+        Ok(Ok(())) => patch_response(
+            "#details-title-notice",
+            maud::html! { p class="details-tag-notice" role="status" { "Title updated." } },
+        )
+        .into_response(),
         Ok(Err(error)) => {
             eprintln!(
                 "Could not update title for media {}: {error}",
                 media_id.as_str()
             );
-            details_redirect(&media_id, return_to, None, Some("Could not update title."))
+            patch_response(
+                "#details-title-notice",
+                maud::html! { p class="details-tag-notice" role="status" { "Could not update title." } },
+            )
+            .into_response()
         }
         Err(error) => {
             eprintln!(
                 "Media title update task failed for {}: {error}",
                 media_id.as_str()
             );
-            details_redirect(&media_id, return_to, None, Some("Could not update title."))
+            patch_response(
+                "#details-title-notice",
+                maud::html! { p class="details-tag-notice" role="status" { "Could not update title." } },
+            )
+            .into_response()
         }
     }
 }
@@ -1104,7 +1159,9 @@ async fn recycle_media_detail_handler(State(state): State<AppState>, body: Bytes
     match tokio::task::spawn_blocking(move || recycle_media(&cmd_id, repo.as_ref())).await {
         Ok(Ok(Some(_))) => {
             let dest = return_to.as_deref().unwrap_or("/explore");
-            Redirect::to(dest).into_response()
+            let script = ExecuteScript::new(format!("window.location.href = {:?};", dest));
+            let sse_event = script.write_as_axum_sse_event();
+            Sse::new(iter([Ok::<axum::response::sse::Event, Infallible>(sse_event)])).into_response()
         }
         Ok(Ok(None)) => StatusCode::NOT_FOUND.into_response(),
         Ok(Err(error)) => {
@@ -1161,7 +1218,8 @@ async fn remove_media_detail_tag(State(state): State<AppState>, body: Bytes) -> 
     let command_media_id = media_id.as_str().to_string();
     let tag_id = tag_id.clone();
     let relationship = relationship.clone();
-    match tokio::task::spawn_blocking(move || {
+    let repo_for_fetch = repo.clone();
+    let result = tokio::task::spawn_blocking(move || {
         let media_id = MediaId::from_hash(command_media_id.clone()).unwrap();
         let edges = repo
             .get_media_adj_list(&media_id)
@@ -1173,27 +1231,63 @@ async fn remove_media_detail_tag(State(state): State<AppState>, body: Bytes) -> 
         remove_tag_from_media(&command_media_id, &tag_id, &relationship, repo.as_ref())
             .map_err(|error| error.to_string())
     })
-    .await
-    {
-        Ok(Ok(())) => details_redirect(&media_id, return_to, Some("Tag removed."), None),
+    .await;
+
+    let repo2 = repo_for_fetch;
+    let mid = media_id.clone();
+    let pairs = tokio::task::spawn_blocking(move || {
+        let media_id = mid.clone();
+        let edges = repo2
+            .get_media_adj_list(&media_id)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+        let mut tag_pairs = Vec::new();
+        for (relationship, tag_id) in edges {
+            let tags = get_tags_by_relationship(&relationship, repo2.as_ref())
+                .map_err(|error| error.to_string())?
+                .unwrap_or_default();
+            if let Some(tag) = tags.into_iter().find(|tag| tag.id() == tag_id) {
+                tag_pairs.push((relationship, tag));
+            }
+        }
+        Ok::<_, String>(tag_pairs)
+    })
+    .await;
+
+    let return_to_opt = return_to;
+    match result {
+        Ok(Ok(())) => {
+            let tag_pairs = pairs.unwrap_or(Ok(Vec::new())).unwrap_or_default();
+            let markup_list = media::details_tag_list(media_id.as_str(), &tag_pairs, return_to_opt);
+            let events: Vec<Result<axum::response::sse::Event, Infallible>> = vec![
+                Ok(PatchElements::new(markup_list.into_string())
+                    .selector("#details-tag-list")
+                    .mode(ElementPatchMode::Outer)
+                    .into()),
+                Ok(PatchElements::new(
+                    maud::html! { p class="details-tag-notice" role="status" { "Tag removed." } }.into_string(),
+                )
+                .selector("#details-title-notice")
+                .mode(ElementPatchMode::Outer)
+                .into()),
+            ];
+            Sse::new(iter(events)).into_response()
+        }
         Ok(Err(error)) => {
-            eprintln!(
-                "Could not remove tag from media {}: {error}",
-                media_id.as_str()
-            );
-            details_redirect(&media_id, return_to, None, Some(&error))
+            eprintln!("Could not remove tag from media {}: {error}", media_id.as_str());
+            patch_response(
+                "#details-title-notice",
+                maud::html! { p class="details-tag-notice" role="status" { (error) } },
+            )
+            .into_response()
         }
         Err(error) => {
-            eprintln!(
-                "Media tag removal task failed for {}: {error}",
-                media_id.as_str()
-            );
-            details_redirect(
-                &media_id,
-                return_to,
-                None,
-                Some("The tag could not be removed. Please try again."),
+            eprintln!("Media tag removal task failed for {}: {error}", media_id.as_str());
+            patch_response(
+                "#details-title-notice",
+                maud::html! { p class="details-tag-notice" role="status" { "The tag could not be removed. Please try again." } },
             )
+            .into_response()
         }
     }
 }
