@@ -233,7 +233,7 @@ pub fn render(
                                         id="collection-name"
                                         name="name"
                                         type="text"
-                                        autocomplete="collection-name"
+                                        autocomplete="off"
                                         required;
                                     button type="submit" class="operation-button" { "Save" }
                                 }
@@ -1074,6 +1074,7 @@ pub fn render_details(
                                     id="details-new-relationship"
                                     name="relationship"
                                     type="text"
+                                    autocomplete="off"
                                     placeholder="e.g. location"
                                     required;
                                 label for="details-new-tag" { "Tag" }
@@ -1081,6 +1082,7 @@ pub fn render_details(
                                     id="details-new-tag"
                                     name="tag"
                                     type="text"
+                                    autocomplete="off"
                                     placeholder="e.g. kitchen"
                                     required;
                                 button type="submit" class="operation-button" { "Add pair" }
@@ -1099,6 +1101,7 @@ pub fn render_details(
                             id="details-media-title"
                             name="title"
                             type="text"
+                            autocomplete="off"
                             value=(media.title.clone().unwrap_or_default())
                             placeholder="No title";
                         button type="submit" class="operation-button" { "Update title" }
@@ -1333,6 +1336,7 @@ pub fn bulk_tag_form(
                         id="bulk-new-relationship"
                         name="relationship"
                         type="text"
+                        autocomplete="off"
                         placeholder="e.g. location"
                         required;
                     label for="bulk-new-tag" { "Tag" }
@@ -1340,6 +1344,7 @@ pub fn bulk_tag_form(
                         id="bulk-new-tag"
                         name="tag_name"
                         type="text"
+                        autocomplete="off"
                         placeholder="e.g. kitchen"
                         required;
                     button type="submit" class="operation-button" { "Add to all results" }
