@@ -105,7 +105,7 @@ fn collection_card(collection: &Collection, tag_names: &[String]) -> Markup {
                 }
             }
             div class="collection-actions" {
-                form method="post" action="/collections/delete" class="collection-delete-form" {
+                form class="collection-delete-form" data-on:submit__prevent="@post('/collections/delete', {contentType: 'form'})" {
                     input type="hidden" name="name" value=(collection.name);
                     button
                         type="submit"

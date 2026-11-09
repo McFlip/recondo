@@ -478,22 +478,25 @@ async fn delete_collection_handler(State(state): State<AppState>, body: Bytes) -
     let name = form_field(&body, "name").unwrap_or_default();
     let repo = state.repo;
     let cmd_name = name.clone();
-    match tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         delete_collection(&cmd_name, repo.as_ref()).map_err(|error| error.to_string())
     })
-    .await
-    {
-        Ok(Ok(true)) => collections_redirect(Some("Collection deleted."), None),
-        Ok(Ok(false)) => collections_redirect(None, Some("Collection not found.")),
+    .await;
+    let dest = match result {
+        Ok(Ok(true)) => collections_dest(Some("Collection deleted."), None),
+        Ok(Ok(false)) => collections_dest(None, Some("Collection not found.")),
         Ok(Err(error)) => {
             eprintln!("Could not delete collection {name:?}: {error}");
-            collections_redirect(None, Some(&error))
+            collections_dest(None, Some(&error))
         }
         Err(error) => {
             eprintln!("Delete collection task failed for {name:?}: {error}");
-            collections_redirect(None, Some("The collection could not be deleted."))
+            collections_dest(None, Some("The collection could not be deleted."))
         }
-    }
+    };
+    let script = ExecuteScript::new(format!("window.location.href = {:?};", dest));
+    let sse_event = script.write_as_axum_sse_event();
+    Sse::new(iter([Ok::<axum::response::sse::Event, Infallible>(sse_event)])).into_response()
 }
 
 fn collections_redirect(notice: Option<&str>, error: Option<&str>) -> Response {
@@ -525,6 +528,22 @@ fn recycle_bin_dest(notice: Option<&str>, error: Option<&str>) -> String {
         "/recycle-bin".to_string()
     } else {
         format!("/recycle-bin?{query}")
+    }
+}
+
+fn collections_dest(notice: Option<&str>, error: Option<&str>) -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    if let Some(notice) = notice {
+        serializer.append_pair("notice", notice);
+    }
+    if let Some(error) = error {
+        serializer.append_pair("error", error);
+    }
+    let query = serializer.finish();
+    if query.is_empty() {
+        "/collections".to_string()
+    } else {
+        format!("/collections?{query}")
     }
 }
 
@@ -3922,7 +3941,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(delete.status(), StatusCode::SEE_OTHER);
+        assert_eq!(delete.status(), StatusCode::OK);
 
         let list = router(state)
             .oneshot(
