@@ -233,6 +233,7 @@ pub fn render(
                                         id="collection-name"
                                         name="name"
                                         type="text"
+                                        autocomplete="collection-name"
                                         required;
                                     button type="submit" class="operation-button" { "Save" }
                                 }
@@ -1268,6 +1269,8 @@ fn media_card(item: &Media, return_to: &str) -> Markup {
                         src=(asset_url)
                         alt=(title)
                         loading="lazy"
+                        width="16"
+                        height="9"
                         data-media-id=(item.id.as_str())
                         data-on:click__prevent="window.openMediaLightbox(el)";
                 } @else if is_video {
@@ -1313,7 +1316,9 @@ mod tests {
         assert!(html.contains("src=\"/asset/video-id\""));
         assert!(!html.contains("Download file"));
         assert!(html.contains("media-item-title-link"));
-        assert!(html.contains("/media/details?id=video-id&amp;return_to=%2Fmedia%3Ftag%3Dabc%26limit%3D10"));
+        assert!(html.contains(
+            "/media/details?id=video-id&amp;return_to=%2Fmedia%3Ftag%3Dabc%26limit%3D10"
+        ));
     }
 }
 
@@ -1401,7 +1406,6 @@ pub fn bulk_tag_form(
     }
 }
 
-
 pub fn bulk_picker_error(message: &str) -> Markup {
     html! {
         div id="bulk-relationship-suggestions" class="details-relationship-suggestions" role="alert" {
@@ -1417,7 +1421,6 @@ pub fn bulk_picker_tags_error(message: &str) -> Markup {
         }
     }
 }
-
 
 pub fn bulk_picker_suggestions(prefix: &str, relationships: &[String], state: &str) -> Markup {
     html! {
@@ -1496,7 +1499,11 @@ pub fn bulk_picker_tags(
     }
 }
 
-pub fn details_tag_list(media_id: &str, tag_pairs: &[(String, Tag)], return_to: Option<&str>) -> Markup {
+pub fn details_tag_list(
+    media_id: &str,
+    tag_pairs: &[(String, Tag)],
+    return_to: Option<&str>,
+) -> Markup {
     html! {
         div class="details-tag-list" id="details-tag-list" {
             @if tag_pairs.is_empty() {

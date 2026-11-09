@@ -249,7 +249,7 @@ h1 em, h2 em { color: var(--accent); font-family: var(--serif); font-weight: 500
 .media-item-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .media-item-card { min-width: 0; overflow: hidden; border: 1px solid #343a2e; background: #1a1d17; }
 .media-preview { display: grid; min-height: 145px; place-items: center; overflow: hidden; background: #10120e; }
-.media-preview img { display: block; width: 100%; max-width: 100%; height: auto; max-height: 360px; object-fit: contain; cursor: zoom-in; }
+.media-preview img { display: block; width: 100%; max-width: 100%; height: auto; max-height: 360px; object-fit: contain; cursor: zoom-in; aspect-ratio: 16 / 9; }
 .media-preview video { display: block; width: 100%; max-width: 100%; height: auto; max-height: 360px; background: #000; }
 .media-download { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; min-height: 145px; width: 100%; color: var(--muted); font-size: 11px; }
 .media-download:hover { color: var(--accent); }
