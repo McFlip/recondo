@@ -255,6 +255,48 @@ pub fn render(
                                 }
                             }
 
+                            div
+                                class="delete-tag-from-results"
+                                data-signals="{ deleteTagOpen: false }" {
+                                button
+                                    type="button"
+                                    class="save-collection-toggle"
+                                    aria-label="Delete tag from results"
+                                    title="Delete tag from results"
+                                    data-on:click="$deleteTagOpen = !$deleteTagOpen" {
+                                    i class="fa-solid fa-trash" aria-hidden="true" {}
+                                    span class="save-collection-label" { "Delete tag from results" }
+                                }
+                                form
+                                    id="delete-tag-from-results-form"
+                                    class="save-collection-form"
+                                    data-show="$deleteTagOpen"
+                                    data-on:submit__prevent="@post('/media/tag-all/remove', {contentType: 'form'})" {
+                                    (hidden_search_state(&tag_ids, groups, add_to_groups, operation))
+                                    input type="hidden" name="limit" value=(limit_value(limit));
+                                    label for="delete-tag-select" { "Tag to delete" }
+                                    select
+                                        id="delete-tag-select"
+                                        name="tag_id"
+                                        required {
+                                        option value="" disabled selected { "Select a tag" }
+                                        @for tag in selected_tags {
+                                            option value=(tag.id().to_string()) { (tag.name()) }
+                                        }
+                                        @if let Some(result) = result {
+                                            @for group in &result.relationships {
+                                                @for counted_tag in &group.tags {
+                                                    option value=(counted_tag.tag.id().to_string()) {
+                                                        (group.relationship) ": " (counted_tag.tag.name())
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    button type="submit" class="operation-button" { "Delete" }
+                                }
+                            }
+
                             section class="selected-tags-section" aria-label="Selected tags" {
                                 p class="media-control-label" { "SELECTED TAGS" }
                                 @if operation.is_grouped() {

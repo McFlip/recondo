@@ -971,3 +971,37 @@ pub fn empty_recycle_bin<R: crate::repository::MediaRepository>(
 ) -> Result<usize, crate::repository::DeleteMediaError<R::Error>> {
     repo.empty_recycle_bin(assets_dir)
 }
+
+pub fn remove_tag_from_media_items<R, E>(
+    media_ids: &[String],
+    tag_id: &str,
+    repo: &R,
+) -> Result<usize, RemoveTagError<E>>
+where
+    R: TagRepository<Error = E> + MediaRepository<Error = E>,
+    E: std::fmt::Display + std::error::Error + 'static,
+{
+    if tag_id.is_empty() {
+        return Err(RemoveTagError::EmptyTagId);
+    }
+    let mut count = 0;
+    for media_id in media_ids {
+        if media_id.is_empty() {
+            return Err(RemoveTagError::EmptyMediaId);
+        }
+        let media_id_parsed = model::MediaId::from_hash(media_id.clone())
+            .map_err(|_| RemoveTagError::EmptyMediaId)?;
+        let edges = repo
+            .get_media_adj_list(&media_id_parsed)
+            .map_err(RemoveTagError::Repository)?
+            .unwrap_or_default();
+        for (relationship, edge_tag_id) in edges {
+            if edge_tag_id == tag_id {
+                repo.remove_tag_edge(media_id, tag_id, &relationship)
+                    .map_err(RemoveTagError::Repository)?;
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
+}

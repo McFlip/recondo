@@ -93,6 +93,7 @@ pub fn router(state: AppState) -> Router {
             get(media_picker_submit_relationship),
         )
         .route("/media/tag-all", post(add_tags_to_search_results_handler))
+        .route("/media/tag-all/remove", post(remove_tag_from_search_results_handler))
         .route(
             "/media/tag-results/relationship-search",
             get(bulk_relationship_search),
@@ -1030,6 +1031,87 @@ async fn add_tags_to_search_results_handler(
         }
         Err(error) => {
             eprintln!("Bulk tag task failed: {error}");
+            redirect_url
+        }
+    };
+    let script = ExecuteScript::new(format!("window.location.href = {:?};", dest));
+    let sse_event = script.write_as_axum_sse_event();
+    Sse::new(iter([Ok::<axum::response::sse::Event, Infallible>(sse_event)])).into_response()
+}
+
+async fn remove_tag_from_search_results_handler(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Response {
+    let body_str = String::from_utf8_lossy(&body);
+    let tag_id = form_field(&body, "tag_id").unwrap_or_default();
+    if tag_id.trim().is_empty() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let params = parse_media_query(&body_str);
+    let tag_ids = params.tag_ids.clone();
+    let groups = params.groups.clone();
+    let operation = params.operation;
+    let repo = state.repo.clone();
+    let tag_id_for_task = tag_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let query = match operation {
+            media::Operation::And => {
+                get_enriched_media_by_logical_and(&tag_ids, usize::MAX, repo.as_ref())
+            }
+            media::Operation::Or => {
+                get_enriched_media_by_logical_or(&tag_ids, usize::MAX, repo.as_ref())
+            }
+            media::Operation::AndThenOr => {
+                get_enriched_media_by_logical_and_then_or(&groups, usize::MAX, repo.as_ref())
+            }
+            media::Operation::OrThenAnd => {
+                get_enriched_media_by_logical_or_then_and(&groups, usize::MAX, repo.as_ref())
+            }
+        }
+        .map_err(|error| error.to_string())?;
+        let media_ids = match query.media {
+            recondo_domain::MediaQueryItems::Items(items) => items
+                .into_iter()
+                .map(|media| media.id.as_str().to_string())
+                .collect::<Vec<_>>(),
+            recondo_domain::MediaQueryItems::Count(_) => Vec::new(),
+        };
+        if media_ids.is_empty() {
+            return Err("No media items were found in the current search results.".to_string());
+        }
+        let mut count = 0;
+        for media_id in &media_ids {
+            let parsed = MediaId::from_hash(media_id.clone()).unwrap();
+            let edges = repo
+                .get_media_adj_list(&parsed)
+                .map_err(|error| error.to_string())?
+                .unwrap_or_default();
+            for (relationship, edge_tag_id) in edges {
+                if edge_tag_id == tag_id_for_task {
+                    repo.remove_tag_edge(media_id, &tag_id_for_task, &relationship)
+                        .map_err(|error| error.to_string())?;
+                    count += 1;
+                }
+            }
+        }
+        Ok::<_, String>(count)
+    })
+    .await;
+
+    let redirect_url = media_page_url_from_params(&params, None, None);
+    let dest = match result {
+        Ok(Ok(count)) => media_page_url_from_params(
+            &params,
+            Some(&format!("Tag removed from {count} reference(s).")),
+            None,
+        ),
+        Ok(Err(error)) => {
+            eprintln!("Could not remove tag from search results: {error}");
+            media_page_url_from_params(&params, None, Some(&error))
+        }
+        Err(error) => {
+            eprintln!("Bulk tag removal task failed: {error}");
             redirect_url
         }
     };

@@ -6,7 +6,8 @@ pub mod repository;
 pub use cmd::{
     AddTagError, CreateMediaError, DeleteCollectionError, RemoveTagError, SaveCollectionError,
     add_tag_to_media, add_tag_to_media_items, delete_collection, empty_recycle_bin,
-    permanently_delete_media, recycle_media, restore_media, save_collection,
+    permanently_delete_media, recycle_media, remove_tag_from_media, remove_tag_from_media_items,
+    restore_media, save_collection,
 };
 pub use model::{ApplyUploadTagsOutcome, Collection, normalize_collection_name};
 pub use qry::{
