@@ -448,7 +448,6 @@ async function recycleFirstImage(page: Page) {
   await expect(page).toHaveURL(/\/media\/details\?id=/);
   const id = new URL(page.url()).searchParams.get('id')!;
   await page.getByRole('button', { name: 'Move to recycle bin' }).click();
-  await expect(page).not.toHaveURL(/\/media\/details/);
   return id;
 }
 
@@ -463,7 +462,6 @@ async function recycleFirstRemainingImage(page: Page) {
   await expect(page).toHaveURL(/\/media\/details\?id=/);
   const id = new URL(page.url()).searchParams.get('id')!;
   await page.getByRole('button', { name: 'Move to recycle bin' }).click();
-  await expect(page).not.toHaveURL(/\/media\/details/);
   return id;
 }
 
