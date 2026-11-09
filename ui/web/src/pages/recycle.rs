@@ -21,7 +21,7 @@ pub fn render_recycle_bin(
                         }
                     }
                     @if !items.is_empty() {
-                        form class="recycle-empty-form" method="post" action="/recycle-bin/empty" {
+                        form class="recycle-empty-form" data-on:submit__prevent="@post('/recycle-bin/empty', {contentType: 'form'})" {
                             button type="submit" class="operation-button recycle-danger-button" {
                                 "Empty recycle bin"
                             }
@@ -104,11 +104,11 @@ fn recycled_card(item: &RecycledMedia) -> Markup {
                     }
                 }
                 div class="recycle-item-actions" {
-                    form method="post" action="/recycle-bin/restore" {
+                    form data-on:submit__prevent="@post('/recycle-bin/restore', {contentType: 'form'})" {
                         input type="hidden" name="media_id" value=(id_str);
                         button type="submit" class="operation-button" { "Restore" }
                     }
-                    form method="post" action="/recycle-bin/delete" {
+                    form data-on:submit__prevent="@post('/recycle-bin/delete', {contentType: 'form'})" {
                         input type="hidden" name="media_id" value=(id_str);
                         button type="submit" class="operation-button recycle-danger-button" { "Delete permanently" }
                     }

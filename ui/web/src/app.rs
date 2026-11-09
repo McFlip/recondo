@@ -224,22 +224,6 @@ async fn recycle_bin_page(
     }
 }
 
-fn recycle_bin_redirect(notice: Option<&str>, error: Option<&str>) -> Response {
-    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-    if let Some(notice) = notice {
-        serializer.append_pair("notice", notice);
-    }
-    if let Some(error) = error {
-        serializer.append_pair("error", error);
-    }
-    let query = serializer.finish();
-    if query.is_empty() {
-        Redirect::to("/recycle-bin").into_response()
-    } else {
-        Redirect::to(&format!("/recycle-bin?{query}")).into_response()
-    }
-}
-
 async fn restore_recycled_handler(State(state): State<AppState>, body: Bytes) -> Response {
     let fields = match parse_form_fields(&body) {
         Ok(fields) => fields,
@@ -255,18 +239,22 @@ async fn restore_recycled_handler(State(state): State<AppState>, body: Bytes) ->
         return StatusCode::BAD_REQUEST.into_response();
     };
     let repo = state.repo;
-    match tokio::task::spawn_blocking(move || restore_media(&media_id, repo.as_ref())).await {
-        Ok(Ok(Some(_))) => recycle_bin_redirect(Some("Item restored."), None),
-        Ok(Ok(None)) => recycle_bin_redirect(None, Some("Item not found in recycle bin.")),
+    let result = tokio::task::spawn_blocking(move || restore_media(&media_id, repo.as_ref())).await;
+    let dest = match result {
+        Ok(Ok(Some(_))) => recycle_bin_dest(Some("Item restored."), None),
+        Ok(Ok(None)) => recycle_bin_dest(None, Some("Item not found in recycle bin.")),
         Ok(Err(error)) => {
             eprintln!("Could not restore media: {error}");
-            recycle_bin_redirect(None, Some("Could not restore item."))
+            recycle_bin_dest(None, Some("Could not restore item."))
         }
         Err(error) => {
             eprintln!("Restore media task failed: {error}");
-            recycle_bin_redirect(None, Some("Could not restore item."))
+            recycle_bin_dest(None, Some("Could not restore item."))
         }
-    }
+    };
+    let script = ExecuteScript::new(format!("window.location.href = {:?};", dest));
+    let sse_event = script.write_as_axum_sse_event();
+    Sse::new(iter([Ok::<axum::response::sse::Event, Infallible>(sse_event)])).into_response()
 }
 
 async fn delete_recycled_handler(State(state): State<AppState>, body: Bytes) -> Response {
@@ -285,22 +273,25 @@ async fn delete_recycled_handler(State(state): State<AppState>, body: Bytes) -> 
     };
     let repo = state.repo;
     let assets_dir = state.assets_dir;
-    match tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         permanently_delete_media(&media_id, &assets_dir, repo.as_ref())
     })
-    .await
-    {
-        Ok(Ok(true)) => recycle_bin_redirect(Some("Item permanently deleted."), None),
-        Ok(Ok(false)) => recycle_bin_redirect(None, Some("Item not found in recycle bin.")),
+    .await;
+    let dest = match result {
+        Ok(Ok(true)) => recycle_bin_dest(Some("Item permanently deleted."), None),
+        Ok(Ok(false)) => recycle_bin_dest(None, Some("Item not found in recycle bin.")),
         Ok(Err(error)) => {
             eprintln!("Could not permanently delete media: {error}");
-            recycle_bin_redirect(None, Some("Could not delete item."))
+            recycle_bin_dest(None, Some("Could not delete item."))
         }
         Err(error) => {
             eprintln!("Delete media task failed: {error}");
-            recycle_bin_redirect(None, Some("Could not delete item."))
+            recycle_bin_dest(None, Some("Could not delete item."))
         }
-    }
+    };
+    let script = ExecuteScript::new(format!("window.location.href = {:?};", dest));
+    let sse_event = script.write_as_axum_sse_event();
+    Sse::new(iter([Ok::<axum::response::sse::Event, Infallible>(sse_event)])).into_response()
 }
 
 async fn empty_recycled_handler(State(state): State<AppState>, body: Bytes) -> Response {
@@ -310,17 +301,21 @@ async fn empty_recycled_handler(State(state): State<AppState>, body: Bytes) -> R
     }
     let repo = state.repo;
     let assets_dir = state.assets_dir;
-    match tokio::task::spawn_blocking(move || empty_recycle_bin(&assets_dir, repo.as_ref())).await {
-        Ok(Ok(_)) => recycle_bin_redirect(Some("Recycle bin emptied."), None),
+    let result = tokio::task::spawn_blocking(move || empty_recycle_bin(&assets_dir, repo.as_ref())).await;
+    let dest = match result {
+        Ok(Ok(_)) => recycle_bin_dest(Some("Recycle bin emptied."), None),
         Ok(Err(error)) => {
             eprintln!("Could not empty recycle bin: {error}");
-            recycle_bin_redirect(None, Some("Could not empty recycle bin."))
+            recycle_bin_dest(None, Some("Could not empty recycle bin."))
         }
         Err(error) => {
             eprintln!("Empty recycle bin task failed: {error}");
-            recycle_bin_redirect(None, Some("Could not empty recycle bin."))
+            recycle_bin_dest(None, Some("Could not empty recycle bin."))
         }
-    }
+    };
+    let script = ExecuteScript::new(format!("window.location.href = {:?};", dest));
+    let sse_event = script.write_as_axum_sse_event();
+    Sse::new(iter([Ok::<axum::response::sse::Event, Infallible>(sse_event)])).into_response()
 }
 
 async fn collections_page(
@@ -514,6 +509,22 @@ fn collections_redirect(notice: Option<&str>, error: Option<&str>) -> Response {
         Redirect::to("/collections").into_response()
     } else {
         Redirect::to(&format!("/collections?{query}")).into_response()
+    }
+}
+
+fn recycle_bin_dest(notice: Option<&str>, error: Option<&str>) -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    if let Some(notice) = notice {
+        serializer.append_pair("notice", notice);
+    }
+    if let Some(error) = error {
+        serializer.append_pair("error", error);
+    }
+    let query = serializer.finish();
+    if query.is_empty() {
+        "/recycle-bin".to_string()
+    } else {
+        format!("/recycle-bin?{query}")
     }
 }
 
