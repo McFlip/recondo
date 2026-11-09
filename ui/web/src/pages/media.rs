@@ -1292,36 +1292,6 @@ fn media_card(item: &Media, return_to: &str) -> Markup {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use recondo_domain::model::{MediaId, MediaOpts};
-
-    #[test]
-    fn video_media_uses_native_player_controls() {
-        let media = Media::new(
-            MediaId::from_hash("video-id").unwrap(),
-            url::Url::parse("file:///assets/video.mp4").unwrap(),
-            Some(MediaOpts {
-                title: Some("video.mp4".into()),
-                mime_type: Some("video/mp4".into()),
-                file_size: Some(100),
-                view_count: None,
-            }),
-        );
-
-        let html = media_card(&media, "/media?tag=abc&limit=10").into_string();
-
-        assert!(html.contains("<video controls"));
-        assert!(html.contains("src=\"/asset/video-id\""));
-        assert!(!html.contains("Download file"));
-        assert!(html.contains("media-item-title-link"));
-        assert!(html.contains(
-            "/media/details?id=video-id&amp;return_to=%2Fmedia%3Ftag%3Dabc%26limit%3D10"
-        ));
-    }
-}
-
 pub fn bulk_tag_form(
     tag_ids: &[String],
     groups: &[Vec<String>],
@@ -1543,5 +1513,35 @@ pub fn details_tag_list(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use recondo_domain::model::{MediaId, MediaOpts};
+
+    #[test]
+    fn video_media_uses_native_player_controls() {
+        let media = Media::new(
+            MediaId::from_hash("video-id").unwrap(),
+            url::Url::parse("file:///assets/video.mp4").unwrap(),
+            Some(MediaOpts {
+                title: Some("video.mp4".into()),
+                mime_type: Some("video/mp4".into()),
+                file_size: Some(100),
+                view_count: None,
+            }),
+        );
+
+        let html = media_card(&media, "/media?tag=abc&limit=10").into_string();
+
+        assert!(html.contains("<video controls"));
+        assert!(html.contains("src=\"/asset/video-id\""));
+        assert!(!html.contains("Download file"));
+        assert!(html.contains("media-item-title-link"));
+        assert!(html.contains(
+            "/media/details?id=video-id&amp;return_to=%2Fmedia%3Ftag%3Dabc%26limit%3D10"
+        ));
     }
 }
