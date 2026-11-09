@@ -224,9 +224,8 @@ pub fn render(
                                 form
                                     id="save-collection-form"
                                     class="save-collection-form"
-                                    method="post"
-                                    action="/collections"
-                                    data-show="$saveOpen" {
+                                    data-show="$saveOpen"
+                                    data-on:submit__prevent="@post('/collections', {contentType: 'form'})" {
                                     (hidden_search_state(&tag_ids, groups, add_to_groups, operation))
                                     input type="hidden" name="limit" value=(limit_value(limit));
                                     label for="collection-name" { "Collection name" }
@@ -1346,7 +1345,7 @@ pub fn bulk_tag_form(
     let state = state_serializer.finish();
     html! {
         section class="details-tag-picker media-bulk-tag-picker" {
-            form class="details-create-tag-pair" method="post" action="/media/tag-all" {
+            form class="details-create-tag-pair" data-on:submit__prevent="@post('/media/tag-all', {contentType: 'form'})" {
                 (hidden_search_state(tag_ids, groups, add_to_groups, operation))
                 input type="hidden" name="limit" value=(limit_value(limit));
                 fieldset {
@@ -1477,7 +1476,7 @@ pub fn bulk_picker_tags(
                 } @else {
                     div class="relationship-tag-grid" {
                         @for tag in tags {
-                            form method="post" action="/media/tag-all" {
+                            form data-on:submit__prevent="@post('/media/tag-all', {contentType: 'form'})" {
                                 (hidden.clone())
                                 input type="hidden" name="limit" value=(limit_value(limit));
                                 input type="hidden" name="relationship" value=(relationship);

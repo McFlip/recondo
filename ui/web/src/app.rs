@@ -448,21 +448,35 @@ async fn save_collection_handler(State(state): State<AppState>, body: Bytes) -> 
     };
 
     let repo = state.repo;
-    match tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         save_collection(&collection, repo.as_ref()).map_err(|error| error.to_string())
     })
-    .await
-    {
-        Ok(Ok(())) => collections_redirect(Some("Collection saved."), None),
+    .await;
+    let dest = match result {
+        Ok(Ok(())) => {
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            serializer.append_pair("notice", "Collection saved.");
+            let query = serializer.finish();
+            if query.is_empty() { "/collections".to_string() } else { format!("/collections?{query}") }
+        }
         Ok(Err(error)) => {
             eprintln!("Could not save collection {name:?}: {error}");
-            collections_redirect(None, Some(&error))
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            serializer.append_pair("error", &error);
+            let query = serializer.finish();
+            if query.is_empty() { "/collections".to_string() } else { format!("/collections?{query}") }
         }
         Err(error) => {
             eprintln!("Save collection task failed for {name:?}: {error}");
-            collections_redirect(None, Some("The collection could not be saved."))
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            serializer.append_pair("error", "The collection could not be saved.");
+            let query = serializer.finish();
+            if query.is_empty() { "/collections".to_string() } else { format!("/collections?{query}") }
         }
-    }
+    };
+    let script = ExecuteScript::new(format!("window.location.href = {:?};", dest));
+    let sse_event = script.write_as_axum_sse_event();
+    Sse::new(iter([Ok::<axum::response::sse::Event, Infallible>(sse_event)])).into_response()
 }
 
 async fn delete_collection_handler(State(state): State<AppState>, body: Bytes) -> Response {
@@ -974,22 +988,24 @@ async fn add_tags_to_search_results_handler(
     .await;
 
     let redirect_url = media_page_url_from_params(&params, None, None);
-    match result {
-        Ok(Ok(count)) => Redirect::to(&media_page_url_from_params(
+    let dest = match result {
+        Ok(Ok(count)) => media_page_url_from_params(
             &params,
             Some(&format!("Tag added to {count} item(s).")),
             None,
-        ))
-        .into_response(),
+        ),
         Ok(Err(error)) => {
             eprintln!("Could not add tags to search results: {error}");
-            Redirect::to(&media_page_url_from_params(&params, None, Some(&error))).into_response()
+            media_page_url_from_params(&params, None, Some(&error))
         }
         Err(error) => {
             eprintln!("Bulk tag task failed: {error}");
-            Redirect::to(&redirect_url).into_response()
+            redirect_url
         }
-    }
+    };
+    let script = ExecuteScript::new(format!("window.location.href = {:?};", dest));
+    let sse_event = script.write_as_axum_sse_event();
+    Sse::new(iter([Ok::<axum::response::sse::Event, Infallible>(sse_event)])).into_response()
 }
 
 async fn bulk_relationship_search(
@@ -3852,7 +3868,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(save.status(), StatusCode::SEE_OTHER);
+        assert_eq!(save.status(), StatusCode::OK);
 
         let list = router(state)
             .oneshot(
