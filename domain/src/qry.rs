@@ -298,7 +298,7 @@ where
     Ok(groups)
 }
 
-fn build_media_query_result<R>(
+pub fn build_media_query_result<R>(
     media_ids: HashSet<MediaId>,
     search_tag_ids: HashSet<TagId>,
     limit: usize,

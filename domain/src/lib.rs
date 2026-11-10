@@ -12,7 +12,7 @@ pub use cmd::{
 pub use model::{ApplyUploadTagsOutcome, Collection, normalize_collection_name};
 pub use qry::{
     CountedTag, EnrichedQueryError, MediaQueryItems, MediaQueryResult, RelationshipTagGroup,
-    filter_out_tags, get_collections_by_prefix, get_enriched_media_by_logical_and,
+    build_media_query_result, filter_out_tags, get_collections_by_prefix, get_enriched_media_by_logical_and,
     get_enriched_media_by_logical_and_then_or, get_enriched_media_by_logical_or,
     get_enriched_media_by_logical_or_then_and, get_media_adj_list, get_media_by_id,
     get_media_ids_by_logical_and, get_media_ids_by_logical_and_then_or, get_media_ids_by_logical_or,
