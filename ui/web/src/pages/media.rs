@@ -48,10 +48,13 @@ impl Operation {
 pub struct GroupState<'a> {
     pub groups: &'a [Vec<String>],
     pub add_to_groups: &'a [usize],
+    pub not_groups: &'a [usize],
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     selected_tags: &[Tag],
+    not_selected_tags: &[Tag],
     group_state: GroupState<'_>,
     limit: usize,
     operation: Operation,
@@ -63,10 +66,15 @@ pub fn render(
         .iter()
         .map(|tag| tag.id().to_string())
         .collect::<Vec<_>>();
+    let not_tag_ids = not_selected_tags
+        .iter()
+        .map(|tag| tag.id().to_string())
+        .collect::<Vec<_>>();
     let groups = group_state.groups;
     let add_to_groups = group_state.add_to_groups;
+    let not_groups = group_state.not_groups;
     let return_to = if operation.is_grouped() {
-        group_state_url(groups, add_to_groups, limit, operation)
+        group_state_url(groups, add_to_groups, not_groups, limit, operation)
     } else {
         media_url(&tag_ids, limit, operation)
     };
@@ -119,6 +127,7 @@ pub fn render(
                                 &tag_ids,
                                 groups,
                                 add_to_groups,
+                                not_groups,
                                 limit,
                                 operation,
                             ))
@@ -184,10 +193,28 @@ pub fn render(
                                             operation,
                                             limit,
                                         ))
+                                        form class="operation-form" method="get" action="/media" {
+                                            input type="hidden" name="operation" value=(if operation.is_grouped() { operation.query_value() } else if operation == Operation::Or { "or_then_and" } else { "and_then_or" });
+                                            input type="hidden" name="limit" value=(limit_value(limit));
+                                            @for id in &tag_ids {
+                                                input type="hidden" name="group" value=(id);
+                                            }
+                                            input type="hidden" name="group" value="";
+                                            input type="hidden" name="notgroup" value="1";
+                                            @for target in add_to_groups {
+                                                input type="hidden" name="target" value=(target);
+                                            }
+                                            button
+                                                type="submit"
+                                                class=(if not_groups.is_empty() { "operation-button" } else { "operation-button is-selected" })
+                                                aria-pressed=(!not_groups.is_empty()) {
+                                                "NOT"
+                                            }
+                                        }
                                     }
                                 }
                                 form class="limit-control" method="get" action="/media" {
-                                    (hidden_search_state(&tag_ids, groups, add_to_groups, operation))
+                                    (hidden_search_state(&tag_ids, &not_tag_ids, groups, add_to_groups, not_groups, operation))
                                     label for="display-limit" class="media-control-label" { "DISPLAY LIMIT" }
                                     select
                                         id="display-limit"
@@ -226,7 +253,7 @@ pub fn render(
                                     class="save-collection-form"
                                     data-show="$saveOpen"
                                     data-on:submit__prevent="@post('/collections', {contentType: 'form'})" {
-                                    (hidden_search_state(&tag_ids, groups, add_to_groups, operation))
+                                    (hidden_search_state(&tag_ids, &not_tag_ids, groups, add_to_groups, not_groups, operation))
                                     input type="hidden" name="limit" value=(limit_value(limit));
                                     label for="collection-name" { "Collection name" }
                                     input
@@ -243,7 +270,7 @@ pub fn render(
                                 class="upload-with-selected-tags"
                                 method="get"
                                 action="/upload" {
-                                (hidden_search_state(&tag_ids, groups, add_to_groups, operation))
+                                (hidden_search_state(&tag_ids, &not_tag_ids, groups, add_to_groups, not_groups, operation))
                                 input type="hidden" name="limit" value=(limit_value(limit));
                                 button
                                     type="submit"
@@ -272,7 +299,7 @@ pub fn render(
                                     class="save-collection-form"
                                     data-show="$deleteTagOpen"
                                     data-on:submit__prevent="@post('/media/tag-all/remove', {contentType: 'form'})" {
-                                    (hidden_search_state(&tag_ids, groups, add_to_groups, operation))
+                                    (hidden_search_state(&tag_ids, &not_tag_ids, groups, add_to_groups, not_groups, operation))
                                     input type="hidden" name="limit" value=(limit_value(limit));
                                     label for="delete-tag-select" { "Tag to delete" }
                                     select
@@ -304,6 +331,7 @@ pub fn render(
                                         selected_tags,
                                         groups,
                                         add_to_groups,
+                                        not_groups,
                                         limit,
                                         operation,
                                     ))
@@ -426,6 +454,7 @@ fn group_editor(
     selected_tags: &[Tag],
     groups: &[Vec<String>],
     add_to_groups: &[usize],
+    not_groups: &[usize],
     limit: usize,
     operation: Operation,
 ) -> Markup {
@@ -433,7 +462,11 @@ fn group_editor(
         div class="media-groups" {
             @for (index, group) in groups.iter().enumerate() {
                 @if index > 0 {
-                    p class="media-group-operator" { (operation.group_separator()) }
+                    @if not_groups.contains(&index) {
+                        p class="media-group-operator" { "BUT NONE OF" }
+                    } @else {
+                        p class="media-group-operator" { (operation.group_separator()) }
+                    }
                 }
                 section class="media-tag-group" aria-label=(format!("Group {}", index + 1)) {
                     div class="media-tag-group-heading" {
@@ -451,6 +484,9 @@ fn group_editor(
                                     input type="hidden" name="target" value=(target);
                                 }
                             }
+                            @for ng in not_groups {
+                                input type="hidden" name="notgroup" value=(ng);
+                            }
                             label class="media-group-target-label" {
                                 input
                                     type="checkbox"
@@ -463,7 +499,7 @@ fn group_editor(
                         }
                         a
                             class="media-group-delete"
-                            href=(delete_group_url(groups, add_to_groups, index, limit, operation))
+                            href=(delete_group_url(groups, add_to_groups, not_groups, index, limit, operation))
                             aria-label=(format!("Delete group {}", index + 1))
                             title="Delete group" {
                             svg class="media-trash-icon" viewBox="0 0 24 24" aria-hidden="true" {
@@ -481,6 +517,7 @@ fn group_editor(
                                         tag,
                                         groups,
                                         add_to_groups,
+                                        not_groups,
                                         index,
                                         limit,
                                         operation,
@@ -491,7 +528,7 @@ fn group_editor(
                     }
                 }
             }
-            (add_group_button(groups, add_to_groups, limit, operation))
+            (add_group_button(groups, add_to_groups, not_groups, limit, operation))
         }
     }
 }
@@ -500,6 +537,7 @@ fn grouped_selected_tag(
     tag: &Tag,
     groups: &[Vec<String>],
     add_to_groups: &[usize],
+    not_groups: &[usize],
     group_index: usize,
     limit: usize,
     operation: Operation,
@@ -508,7 +546,7 @@ fn grouped_selected_tag(
     remaining_groups[group_index].retain(|id| id != tag.id());
     let has_tags = remaining_groups.iter().any(|group| !group.is_empty());
     let href = if has_tags {
-        group_state_url(&remaining_groups, add_to_groups, limit, operation)
+        group_state_url(&remaining_groups, add_to_groups, not_groups, limit, operation)
     } else {
         "/explore".to_string()
     };
@@ -554,6 +592,7 @@ fn selected_tag(tag: &Tag, selected_ids: &[String], limit: usize, operation: Ope
 fn group_state_url(
     groups: &[Vec<String>],
     add_to_groups: &[usize],
+    not_groups: &[usize],
     limit: usize,
     operation: Operation,
 ) -> String {
@@ -565,6 +604,9 @@ fn group_state_url(
     for target in add_to_groups {
         serializer.append_pair("target", &target.to_string());
     }
+    for index in not_groups {
+        serializer.append_pair("notgroup", &index.to_string());
+    }
     serializer.append_pair("limit", &limit_value(limit));
     format!("/media?{}", serializer.finish())
 }
@@ -572,17 +614,29 @@ fn group_state_url(
 fn add_group_button(
     groups: &[Vec<String>],
     add_to_groups: &[usize],
+    not_groups: &[usize],
     limit: usize,
     operation: Operation,
 ) -> Markup {
     let mut groups = groups.to_vec();
-    groups.push(Vec::new());
+    // Insert the new group before any NOT groups so NOT stays at the bottom.
+    let insert_at = not_groups.iter().copied().min().unwrap_or(groups.len());
+    groups.insert(insert_at, Vec::new());
     let mut add_to_groups = add_to_groups.to_vec();
-    add_to_groups.push(groups.len() - 1);
+    add_to_groups.push(insert_at);
+    let mut not_groups = not_groups.to_vec();
+    for ng in &mut not_groups {
+        if *ng >= insert_at {
+            *ng += 1;
+        }
+    }
     html! {
         form class="media-add-group-form" method="get" action="/media" {
-            (hidden_search_state(&[], &groups, &add_to_groups, operation))
+            (hidden_search_state(&[], &[], &groups, &add_to_groups, &not_groups, operation))
             input type="hidden" name="limit" value=(limit_value(limit));
+            @for ng in &not_groups {
+                input type="hidden" name="notgroup" value=(ng);
+            }
             button
                 type="submit"
                 class="media-add-group operation-button"
@@ -596,6 +650,7 @@ fn add_group_button(
 fn delete_group_url(
     groups: &[Vec<String>],
     add_to_groups: &[usize],
+    not_groups: &[usize],
     index: usize,
     limit: usize,
     operation: Operation,
@@ -617,7 +672,15 @@ fn delete_group_url(
             std::cmp::Ordering::Equal => None,
         })
         .collect::<Vec<_>>();
-    group_state_url(&remaining_groups, &remaining_targets, limit, operation)
+    let remaining_not_groups = not_groups
+        .iter()
+        .filter_map(|target| match target.cmp(&index) {
+            std::cmp::Ordering::Less => Some(*target),
+            std::cmp::Ordering::Greater => Some(target - 1),
+            std::cmp::Ordering::Equal => None,
+        })
+        .collect::<Vec<_>>();
+    group_state_url(&remaining_groups, &remaining_targets, &remaining_not_groups, limit, operation)
 }
 
 fn media_details_url(media_id: &str, return_to: &str) -> String {
@@ -652,8 +715,10 @@ fn media_url(tag_ids: &[String], limit: usize, operation: Operation) -> String {
 
 fn hidden_search_state(
     tag_ids: &[String],
+    not_tag_ids: &[String],
     groups: &[Vec<String>],
     add_to_groups: &[usize],
+    not_groups: &[usize],
     operation: Operation,
 ) -> Markup {
     html! {
@@ -665,9 +730,18 @@ fn hidden_search_state(
             @for target in add_to_groups {
                 input type="hidden" name="target" value=(target);
             }
+            @for id in not_tag_ids {
+                input type="hidden" name="not" value=(id);
+            }
+            @for index in not_groups {
+                input type="hidden" name="notgroup" value=(index);
+            }
         } @else {
             @for id in tag_ids {
                 input type="hidden" name="tag" value=(id);
+            }
+            @for id in not_tag_ids {
+                input type="hidden" name="not" value=(id);
             }
             @if operation == Operation::Or {
                 input type="hidden" name="operation" value="or";
@@ -782,10 +856,11 @@ fn relationship_picker(
     selected_ids: &[String],
     groups: &[Vec<String>],
     add_to_groups: &[usize],
+    not_groups: &[usize],
     limit: usize,
     operation: Operation,
 ) -> Markup {
-    let state = picker_state_query(selected_ids, groups, add_to_groups, limit, operation);
+    let state = picker_state_query(selected_ids, groups, add_to_groups, not_groups, limit, operation);
     html! {
         form
             id="media-relationship-search"
@@ -822,16 +897,18 @@ fn relationship_picker(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn picker_suggestions(
     prefix: &str,
     relationships: &[String],
     selected_ids: &[String],
     groups: &[Vec<String>],
     add_to_groups: &[usize],
+    not_groups: &[usize],
     limit: usize,
     operation: Operation,
 ) -> Markup {
-    let state = picker_state_query(selected_ids, groups, add_to_groups, limit, operation);
+    let state = picker_state_query(selected_ids, groups, add_to_groups, not_groups, limit, operation);
     html! {
         div id="media-relationship-suggestions" class="relationship-suggestions media-picker-suggestions" role="status" aria-live="polite" {
             @if prefix.trim().is_empty() {
@@ -863,12 +940,14 @@ pub fn picker_suggestions(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn picker_relationship_tags(
     relationship: &str,
     tags: &[Tag],
     selected_ids: &[String],
     groups: &[Vec<String>],
     add_to_groups: &[usize],
+    not_groups: &[usize],
     limit: usize,
     operation: Operation,
 ) -> Markup {
@@ -900,6 +979,7 @@ pub fn picker_relationship_tags(
                                     add_tag_to_groups_url(
                                         groups,
                                         add_to_groups,
+                                        not_groups,
                                         tag.id(),
                                         limit,
                                         operation,
@@ -930,6 +1010,7 @@ fn picker_state_query(
     selected_ids: &[String],
     groups: &[Vec<String>],
     add_to_groups: &[usize],
+    not_groups: &[usize],
     limit: usize,
     operation: Operation,
 ) -> String {
@@ -944,6 +1025,9 @@ fn picker_state_query(
             for target in add_to_groups {
                 serializer.append_pair("target", &target.to_string());
             }
+            for index in not_groups {
+                serializer.append_pair("notgroup", &index.to_string());
+            }
         }
         _ => {
             serializer.append_pair("selected", &selected_ids.join(","));
@@ -955,6 +1039,7 @@ fn picker_state_query(
 fn add_tag_to_groups_url(
     groups: &[Vec<String>],
     add_to_groups: &[usize],
+    not_groups: &[usize],
     tag_id: &str,
     limit: usize,
     operation: Operation,
@@ -967,7 +1052,7 @@ fn add_tag_to_groups_url(
             group.push(tag_id.to_string());
         }
     }
-    group_state_url(&updated_groups, add_to_groups, limit, operation)
+    group_state_url(&updated_groups, add_to_groups, not_groups, limit, operation)
 }
 
 fn limit_value(limit: usize) -> String {
@@ -1366,7 +1451,7 @@ pub fn bulk_tag_form(
     html! {
         section class="details-tag-picker media-bulk-tag-picker" {
             form class="details-create-tag-pair" data-on:submit__prevent="@post('/media/tag-all', {contentType: 'form'})" {
-                (hidden_search_state(tag_ids, groups, add_to_groups, operation))
+                (hidden_search_state(tag_ids, &[], groups, add_to_groups, &[], operation))
                 input type="hidden" name="limit" value=(limit_value(limit));
                 fieldset {
                     legend { "Create a relationship and tag" }
@@ -1480,7 +1565,7 @@ pub fn bulk_picker_tags(
     limit: usize,
     operation: Operation,
 ) -> Markup {
-    let hidden = hidden_search_state(tag_ids, groups, add_to_groups, operation);
+    let hidden = hidden_search_state(tag_ids, &[], groups, add_to_groups, &[], operation);
     html! {
         div id="bulk-relationship-tags" class="details-relationship-tags" aria-live="polite" {
             article class="relationship-result-card details-picker-result-card" {

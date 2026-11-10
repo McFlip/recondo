@@ -28,9 +28,11 @@ use recondo_domain::model::{
 };
 use recondo_domain::repository::{MediaRepository, TagRepository};
 use recondo_domain::{
-    get_collections_by_prefix, get_enriched_media_by_logical_and,
+    build_media_query_result, get_collections_by_prefix, get_enriched_media_by_logical_and,
     get_enriched_media_by_logical_and_then_or, get_enriched_media_by_logical_or,
-    get_enriched_media_by_logical_or_then_and, get_recycled_media, get_relationships_by_prefix,
+    get_enriched_media_by_logical_or_then_and, get_media_ids_by_logical_and,
+    get_media_ids_by_logical_and_then_or, get_media_ids_by_logical_or,
+    get_media_ids_by_logical_or_then_and, get_recycled_media, get_relationships_by_prefix,
     get_tag_adj_list, get_tags_by_prefix, get_tags_by_relationship, list_collections,
 };
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
@@ -1575,9 +1577,11 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
     if params.tag_ids.is_empty() {
         return media::render(
             &[],
+            &[],
             media::GroupState {
                 groups: &params.groups,
                 add_to_groups: &params.add_to_groups,
+                not_groups: &params.not_groups,
             },
             params.limit,
             params.operation,
@@ -1593,36 +1597,81 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
         .map(|id| Tag::from_parts(id.clone(), format!("Unknown tag {}", short_id(id))))
         .collect::<Vec<_>>();
     let tag_ids = params.tag_ids.clone();
+    let mut not_tag_ids = params.not_tag_ids.clone();
     let groups = params.groups.clone();
+    let not_groups = params.not_groups.clone();
     let limit = params.limit;
     let operation = params.operation;
     let result = tokio::task::spawn_blocking(move || {
-        let query = match operation {
+        // Separate NOT groups from included groups.
+        let include_groups: Vec<Vec<String>> = groups
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !not_groups.contains(i))
+            .map(|(_, g)| g.clone())
+            .collect();
+        for i in &not_groups {
+            if let Some(g) = groups.get(*i) {
+                for id in g {
+                    if !not_tag_ids.contains(id) {
+                        not_tag_ids.push(id.clone());
+                    }
+                }
+            }
+        }
+
+        let mut normal_ids = match operation {
             media::Operation::And => {
-                get_enriched_media_by_logical_and(&tag_ids, limit, repo.as_ref())
+                get_media_ids_by_logical_and(tag_ids.iter().map(String::as_str), repo.as_ref())
             }
             media::Operation::Or => {
-                get_enriched_media_by_logical_or(&tag_ids, limit, repo.as_ref())
+                get_media_ids_by_logical_or(tag_ids.iter().map(String::as_str), repo.as_ref())
             }
             media::Operation::AndThenOr => {
-                get_enriched_media_by_logical_and_then_or(&groups, limit, repo.as_ref())
+                get_media_ids_by_logical_and_then_or(
+                    include_groups.iter().map(|group| group.iter().map(String::as_str)),
+                    repo.as_ref(),
+                )
             }
             media::Operation::OrThenAnd => {
-                get_enriched_media_by_logical_or_then_and(&groups, limit, repo.as_ref())
+                get_media_ids_by_logical_or_then_and(
+                    include_groups.iter().map(|group| group.iter().map(String::as_str)),
+                    repo.as_ref(),
+                )
             }
         }
         .map_err(|error| error.to_string())?;
+
+        if !not_tag_ids.is_empty() {
+            let excluded = get_media_ids_by_logical_or(
+                not_tag_ids.iter().map(String::as_str),
+                repo.as_ref(),
+            )
+            .map_err(|error| error.to_string())?;
+            normal_ids.retain(|id| !excluded.contains(id));
+        }
+
+        let search_tag_ids: std::collections::HashSet<String> = if operation.is_grouped() {
+            include_groups.iter().flatten().cloned().collect()
+        } else {
+            tag_ids.iter().cloned().collect()
+        };
+        let query = build_media_query_result(normal_ids, search_tag_ids, limit, repo.as_ref())
+            .map_err(|error| error.to_string())?;
         let selected_tags = selected_tag_labels(&tag_ids, repo.as_ref())?;
-        Ok::<_, String>((query, selected_tags))
+        let not_selected_tags = selected_tag_labels(&not_tag_ids, repo.as_ref())?;
+        Ok::<_, String>((query, selected_tags, not_selected_tags))
     })
     .await;
 
     match result {
-        Ok(Ok((query, selected_tags))) => media::render(
+        Ok(Ok((query, selected_tags, not_selected_tags))) => media::render(
             &selected_tags,
+            &not_selected_tags,
             media::GroupState {
                 groups: &params.groups,
                 add_to_groups: &params.add_to_groups,
+                not_groups: &params.not_groups,
             },
             params.limit,
             params.operation,
@@ -1634,9 +1683,11 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
             eprintln!("Error querying media for selected tags: {error}");
             media::render(
                 &placeholder_tags,
+                &[],
                 media::GroupState {
                     groups: &params.groups,
                     add_to_groups: &params.add_to_groups,
+                    not_groups: &params.not_groups,
                 },
                 params.limit,
                 params.operation,
@@ -1649,9 +1700,11 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
             eprintln!("Media query task failed: {error}");
             media::render(
                 &placeholder_tags,
+                &[],
                 media::GroupState {
                     groups: &params.groups,
                     add_to_groups: &params.add_to_groups,
+                    not_groups: &params.not_groups,
                 },
                 params.limit,
                 params.operation,
@@ -1665,8 +1718,10 @@ async fn media_page(State(state): State<AppState>, RawQuery(raw_query): RawQuery
 
 struct MediaQueryParams {
     tag_ids: Vec<String>,
+    not_tag_ids: Vec<String>,
     groups: Vec<Vec<String>>,
     add_to_groups: Vec<usize>,
+    not_groups: Vec<usize>,
     limit: usize,
     operation: media::Operation,
 }
@@ -1693,9 +1748,18 @@ fn media_state_string(params: &MediaQueryParams) -> String {
         for target in &params.add_to_groups {
             serializer.append_pair("target", &target.to_string());
         }
+        for id in &params.not_tag_ids {
+            serializer.append_pair("not", id);
+        }
+        for index in &params.not_groups {
+            serializer.append_pair("notgroup", &index.to_string());
+        }
     } else {
         for id in &params.tag_ids {
             serializer.append_pair("tag", id);
+        }
+        for id in &params.not_tag_ids {
+            serializer.append_pair("not", id);
         }
         if params.operation == media::Operation::Or {
             serializer.append_pair("operation", "or");
@@ -1712,7 +1776,9 @@ fn media_state_string(params: &MediaQueryParams) -> String {
 
 fn parse_media_query(query: &str) -> MediaQueryParams {
     let mut tag_ids = Vec::new();
+    let mut not_tag_ids = Vec::new();
     let mut groups = Vec::new();
+    let mut not_groups = Vec::new();
     let mut add_to_groups = Vec::new();
     let mut limit = media::DEFAULT_LIMIT;
     let mut operation = media::Operation::And;
@@ -1738,6 +1804,19 @@ fn parse_media_query(query: &str) -> MediaQueryParams {
                     && !add_to_groups.contains(&index)
                 {
                     add_to_groups.push(index);
+                }
+            }
+            "not" if !value.is_empty() => {
+                let id = value.into_owned();
+                if !not_tag_ids.contains(&id) {
+                    not_tag_ids.push(id);
+                }
+            }
+            "notgroup" => {
+                if let Ok(index) = value.parse::<usize>()
+                    && !not_groups.contains(&index)
+                {
+                    not_groups.push(index);
                 }
             }
             "limit" => {
@@ -1783,8 +1862,10 @@ fn parse_media_query(query: &str) -> MediaQueryParams {
     }
     MediaQueryParams {
         tag_ids,
+        not_tag_ids,
         groups,
         add_to_groups,
+        not_groups,
         limit,
         operation,
     }
@@ -1804,9 +1885,18 @@ fn media_page_url_from_params(
         for target in &params.add_to_groups {
             serializer.append_pair("target", &target.to_string());
         }
+        for id in &params.not_tag_ids {
+            serializer.append_pair("not", id);
+        }
+        for index in &params.not_groups {
+            serializer.append_pair("notgroup", &index.to_string());
+        }
     } else {
         for id in &params.tag_ids {
             serializer.append_pair("tag", id);
+        }
+        for id in &params.not_tag_ids {
+            serializer.append_pair("not", id);
         }
         if params.operation == media::Operation::Or {
             serializer.append_pair("operation", "or");
@@ -1833,6 +1923,7 @@ struct MediaPickerParams {
     selected_ids: Vec<String>,
     groups: Vec<Vec<String>>,
     add_to_groups: Vec<usize>,
+    not_groups: Vec<usize>,
     operation: media::Operation,
     limit: usize,
 }
@@ -1844,6 +1935,7 @@ fn parse_media_picker_query(query: &str) -> MediaPickerParams {
         selected_ids: Vec::new(),
         groups: Vec::new(),
         add_to_groups: Vec::new(),
+        not_groups: Vec::new(),
         operation: media::Operation::Or,
         limit: media::DEFAULT_LIMIT,
     };
@@ -1881,6 +1973,13 @@ fn parse_media_picker_query(query: &str) -> MediaPickerParams {
                     "or_then_and" => media::Operation::OrThenAnd,
                     _ => params.operation,
                 };
+            }
+            "notgroup" => {
+                if let Ok(index) = value.parse::<usize>()
+                    && !params.not_groups.contains(&index)
+                {
+                    params.not_groups.push(index);
+                }
             }
             "limit" => {
                 params.limit = if value == "unlimited" {
@@ -2012,6 +2111,7 @@ async fn media_picker_search(
             &params.selected_ids,
             &params.groups,
             &params.add_to_groups,
+            &params.not_groups,
             params.limit,
             params.operation,
         ),
@@ -2038,6 +2138,7 @@ async fn media_picker_relationship(
         params.selected_ids,
         params.groups,
         params.add_to_groups,
+        params.not_groups,
         params.limit,
         params.operation,
     )
@@ -2088,6 +2189,7 @@ async fn media_picker_submit_relationship(
             &params.selected_ids,
             &params.groups,
             &params.add_to_groups,
+            &params.not_groups,
             params.limit,
             params.operation,
         ),
@@ -2104,12 +2206,14 @@ async fn media_picker_submit_relationship(
     patch_response("#media-relationship-details", markup)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn load_media_picker_relationship(
     repo: Arc<RedbMediaRepository>,
     relationship: String,
     selected_ids: Vec<String>,
     groups: Vec<Vec<String>>,
     add_to_groups: Vec<usize>,
+    not_groups: Vec<usize>,
     limit: usize,
     operation: media::Operation,
 ) -> maud::Markup {
@@ -2129,6 +2233,7 @@ async fn load_media_picker_relationship(
             &selected_ids,
             &groups,
             &add_to_groups,
+            &not_groups,
             limit,
             operation,
         ),

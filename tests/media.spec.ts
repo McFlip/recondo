@@ -526,3 +526,31 @@ test.describe.serial('Recycle bin workflow', () => {
     await expect(page.locator('[data-testid="recycle-bin-empty"]')).toBeVisible();
   });
 });
+
+test('NOT button filters results by excluded tag', async ({ page }) => {
+  await seedMedia(page);
+  await seedAdditionalTag(page);
+  await page.goto('/explore');
+  await page.getByRole('searchbox').fill('to');
+  await page.getByRole('button', { name: 'to do' }).click();
+  await page.getByRole('link', { name: 'needs tags' }).click();
+
+  await page.getByRole('button', { name: 'NOT', exact: true }).click();
+  await expect(page.locator('.media-tag-group')).toHaveCount(2);
+  await expect(page.getByRole('button', { name: 'NOT', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+
+  await page
+    .getByRole('checkbox', { name: 'Add new tags to this group' })
+    .nth(1)
+    .check();
+
+  await page.getByRole('searchbox', { name: 'SEARCH RELATIONSHIPS' }).fill('sub');
+  await page.getByRole('button', { name: 'subject' }).click();
+  await page.getByRole('link', { name: 'field note' }).click();
+
+  // The media item tagged field note should be excluded.
+  await expect(page.locator('.media-preview')).toHaveCount(3);
+});
