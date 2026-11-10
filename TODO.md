@@ -1,5 +1,5 @@
 # To Do
 
 - [ ] NOT logical operator
-- [ ] bulk untag
+- [x] bulk untag
 - [x] delete button on light box
