@@ -60,6 +60,13 @@ window.updateMediaLightbox = () => {
   lightboxImg.src = currentImg.src;
   lightboxImg.alt = currentImg.alt || 'Full-size media preview';
 
+  const titleEl = document.getElementById('media-lightbox-title');
+  if (titleEl) {
+    const mediaTitle = currentImg ? (currentImg.getAttribute('data-media-title') || '') : '';
+    titleEl.textContent = mediaTitle;
+    titleEl.style.display = mediaTitle ? '' : 'none';
+  }
+
   const openBtn = document.getElementById('media-lightbox-open');
   if (openBtn) {
     openBtn.href = currentMediaId ? mediaDetailsUrl(currentMediaId) : '#';

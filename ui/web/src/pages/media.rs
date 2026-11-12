@@ -365,6 +365,11 @@ pub fn render(
                 class="media-lightbox"
                 aria-label="Full-size image"
                 data-on:click="if (evt.target === el) el.close()" {
+                h2
+                    id="media-lightbox-title"
+                    class="media-lightbox-title"
+                    data-testid="media-lightbox-title"
+                    aria-live="polite" {}
                 button
                     type="button"
                     class="media-lightbox-close"
@@ -1402,6 +1407,7 @@ fn media_card(item: &Media, return_to: &str) -> Markup {
                         width="16"
                         height="9"
                         data-media-id=(item.id.as_str())
+                        data-media-title=(item.title.clone().unwrap_or_default())
                         data-on:click__prevent="window.openMediaLightbox(el)";
                 } @else if is_video {
                     video controls preload="metadata" src=(asset_url) {

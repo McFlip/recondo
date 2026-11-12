@@ -447,7 +447,10 @@ async function recycleFirstImage(page: Page) {
   await page.locator('#media-lightbox-open').click();
   await expect(page).toHaveURL(/\/media\/details\?id=/);
   const id = new URL(page.url()).searchParams.get('id')!;
-  await page.getByRole('button', { name: 'Move to recycle bin' }).click();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().includes('/media/details/recycle')),
+    page.getByRole('button', { name: 'Move to recycle bin' }).click(),
+  ]);
   return id;
 }
 
@@ -461,7 +464,10 @@ async function recycleFirstRemainingImage(page: Page) {
   await page.locator('#media-lightbox-open').click();
   await expect(page).toHaveURL(/\/media\/details\?id=/);
   const id = new URL(page.url()).searchParams.get('id')!;
-  await page.getByRole('button', { name: 'Move to recycle bin' }).click();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().includes('/media/details/recycle')),
+    page.getByRole('button', { name: 'Move to recycle bin' }).click(),
+  ]);
   return id;
 }
 
