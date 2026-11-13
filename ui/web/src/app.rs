@@ -1289,6 +1289,11 @@ async fn recycle_media_detail_handler(State(state): State<AppState>, body: Bytes
     let mid = media_id.as_str().to_string();
     match tokio::task::spawn_blocking(move || recycle_media(&cmd_id, repo.as_ref())).await {
         Ok(Ok(Some(_))) => {
+            if let Some(url) = return_to.as_deref() {
+                let script = ExecuteScript::new(format!("window.location.href = '{}';", url));
+                let sse_event = script.write_as_axum_sse_event();
+                return Sse::new(iter([Ok::<axum::response::sse::Event, Infallible>(sse_event)])).into_response();
+            }
             let script = ExecuteScript::new(format!(
                 "{{ const card = document.querySelector(\"[data-testid='media-card'] img[data-media-id='{mid}']\")?.closest(\"[data-testid='media-card']\"); if (card) card.remove(); const dialog = document.getElementById('media-lightbox'); if (dialog && dialog.open) dialog.close(); }}",
                 mid = mid
