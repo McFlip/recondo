@@ -2,6 +2,7 @@ check:
   cargo check
   cargo clippy
   cargo test
+  fnm use latest
   pnpm exec playwright test
 
 run: check
